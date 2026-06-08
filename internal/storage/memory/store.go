@@ -8,17 +8,14 @@ import (
 	"github.com/outgate-ai/og-local/internal/storage"
 )
 
-// Store is an entry-count-capped LRU implementation of storage.Store, backed by
-// hashicorp/golang-lru. The backing cache is internally synchronized, so this
-// wrapper adds no locking of its own.
+// Store implements storage.Store. The backing lru.Cache is internally
+// synchronized, so this wrapper adds no locking of its own.
 type Store[V any] struct {
 	c *lru.Cache[string, V]
 }
 
 var _ storage.Store[int] = (*Store[int])(nil)
 
-// New returns a Store holding at most maxEntries entries. maxEntries must be
-// positive.
 func New[V any](maxEntries int) (*Store[V], error) {
 	if maxEntries <= 0 {
 		return nil, fmt.Errorf("memory: maxEntries must be positive, got %d", maxEntries)

@@ -53,7 +53,6 @@ func TestVerifyRejectsTamper(t *testing.T) {
 	m := newTestMinter(t, clk, time.Hour)
 	tok := m.Mint()
 
-	// Flip a character partway through the base32 body for several positions.
 	for _, pos := range []int{len(prefix) + 1, len(prefix) + 5, len(tok) - 2} {
 		b := []byte(tok)
 		if b[pos] == 'a' {
@@ -159,9 +158,8 @@ func TestNewMinterRejectsNonPositiveTTL(t *testing.T) {
 	}
 }
 
-// TestNoFilesystemImports asserts the token package imports nothing that can
-// touch the filesystem. This is the structural form of the never-touches-disk
-// guarantee — stronger than a runtime hook, since it holds for every code path.
+// TestNoFilesystemImports enforces the never-touches-disk guarantee structurally:
+// the package must import nothing that can write files.
 func TestNoFilesystemImports(t *testing.T) {
 	denied := map[string]bool{
 		"os":            true,
