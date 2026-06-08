@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"io"
 	"io/fs"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -79,8 +80,9 @@ func (m *FS) Remove(name string) error {
 func (m *FS) RemoveAll(path string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	prefix := path + string(filepath.Separator)
 	for name := range m.files {
-		if name == path || strings.HasPrefix(name, path+"/") {
+		if name == path || strings.HasPrefix(name, prefix) {
 			delete(m.files, name)
 		}
 	}

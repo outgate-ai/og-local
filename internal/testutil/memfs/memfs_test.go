@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"path/filepath"
 	"sync"
 	"testing"
 )
@@ -22,7 +23,6 @@ func readAll(t *testing.T, m *FS, name string) []byte {
 	return b
 }
 
-// write creates name and writes data, failing the test on any error.
 func write(t *testing.T, m *FS, name, data string) {
 	t.Helper()
 	w, err := m.Create(name)
@@ -37,7 +37,6 @@ func write(t *testing.T, m *FS, name, data string) {
 	}
 }
 
-// appendTo appends data to an existing file, failing the test on any error.
 func appendTo(t *testing.T, m *FS, name, data string) {
 	t.Helper()
 	w, err := m.OpenForAppend(name)
@@ -140,18 +139,21 @@ func TestRemove(t *testing.T) {
 
 func TestRemoveAll(t *testing.T) {
 	m := New()
-	write(t, m, "dir/a", "1")
-	write(t, m, "dir/sub/b", "2")
-	write(t, m, "other/c", "3")
+	a := filepath.Join("dir", "a")
+	b := filepath.Join("dir", "sub", "b")
+	other := filepath.Join("other", "c")
+	write(t, m, a, "1")
+	write(t, m, b, "2")
+	write(t, m, other, "3")
 	if err := m.RemoveAll("dir"); err != nil {
 		t.Fatalf("RemoveAll: %v", err)
 	}
-	for _, gone := range []string{"dir/a", "dir/sub/b"} {
+	for _, gone := range []string{a, b} {
 		if _, err := m.Stat(gone); !errors.Is(err, fs.ErrNotExist) {
 			t.Errorf("%s present after RemoveAll", gone)
 		}
 	}
-	if _, err := m.Stat("other/c"); err != nil {
+	if _, err := m.Stat(other); err != nil {
 		t.Error("RemoveAll removed a sibling outside the path")
 	}
 }

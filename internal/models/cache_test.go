@@ -11,14 +11,10 @@ import (
 	"github.com/outgate-ai/og-local/internal/testutil/memfs"
 )
 
-// failCreateFS wraps an FS but fails every Create, to drive WriteManifest's
-// error path.
 type failCreateFS struct{ FS }
 
 func (failCreateFS) Create(string) (io.WriteCloser, error) { return nil, errors.New("create denied") }
 
-// failWriteFS returns a writer that errors on Write, to drive WriteManifest's
-// write-failure path.
 type failWriteFS struct{ FS }
 
 func (failWriteFS) Create(string) (io.WriteCloser, error) { return failWriter{}, nil }
@@ -97,7 +93,6 @@ func TestIsCachedAndWriteManifest(t *testing.T) {
 	seedFile(t, fsys, filepath.Join(dir, "a.bin"), "abc")
 	seedFile(t, fsys, filepath.Join(dir, "b.bin"), "anything")
 
-	// Files present but no manifest yet.
 	if IsCached(fsys, dir, m) {
 		t.Fatal("IsCached without manifest = true")
 	}

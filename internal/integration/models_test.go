@@ -17,9 +17,6 @@ import (
 	"github.com/outgate-ai/og-local/internal/models"
 )
 
-// TestModelPullEndToEnd downloads a small fixture "model" from a local server
-// through the real osFS and asserts the files land with verified checksums and
-// a manifest, using the same Downloader path that ogl model pull uses.
 func TestModelPullEndToEnd(t *testing.T) {
 	files := map[string]string{
 		"config.json":     `{"hidden_size": 8}`,
