@@ -27,10 +27,6 @@ func runtimeDir(root string) string {
 	return filepath.Join(root, "runtime", runtime.GOOS+"-"+runtime.GOARCH)
 }
 
-// SharedLibPath resolves the ONNX Runtime shared library: OGL_ONNXRUNTIME_LIB
-// if set and present, else the cached copy under root. It does not load the
-// library; loading is the detector's concern. Returns ErrRuntimeNotFound when
-// neither location has it.
 func SharedLibPath(fsys FS, root, override string) (string, error) {
 	if override != "" {
 		if _, err := fsys.Stat(override); err == nil {

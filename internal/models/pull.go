@@ -5,8 +5,6 @@ import (
 	"net/http"
 )
 
-// puller holds the collaborators Pull/List need, so the logic is testable with
-// an in-memory filesystem and a fixture transport.
 type puller struct {
 	fsys    FS
 	rt      http.RoundTripper

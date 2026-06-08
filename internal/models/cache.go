@@ -25,8 +25,6 @@ func CacheRoot() string {
 	return filepath.Join(home, ".cache", "og-local")
 }
 
-// ModelDir is the snapshot directory for a model, mirroring the
-// huggingface_hub layout: <root>/models/models--<org>--<name>/snapshots/<rev>.
 func ModelDir(root string, m Model) string {
 	repo := "models--" + strings.ReplaceAll(m.Repo, "/", "--")
 	return filepath.Join(root, "models", repo, "snapshots", m.Revision)

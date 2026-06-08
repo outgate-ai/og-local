@@ -34,9 +34,6 @@ func NewDownloader(rt http.RoundTripper, fsys FS) *Downloader {
 	return NewDownloaderWithBaseURL(rt, fsys, hfBaseURL)
 }
 
-// NewDownloaderWithBaseURL overrides the upstream base URL, for tests serving
-// fixtures from a local server. The transport is wrapped in an http.Client so
-// HuggingFace's 302 redirects to its CDN are followed (RoundTrip alone does not).
 func NewDownloaderWithBaseURL(rt http.RoundTripper, fsys FS, baseURL string) *Downloader {
 	if rt == nil {
 		rt = http.DefaultTransport
@@ -44,8 +41,6 @@ func NewDownloaderWithBaseURL(rt http.RoundTripper, fsys FS, baseURL string) *Do
 	return &Downloader{
 		client: &http.Client{
 			Transport: rt,
-			// HF redirects cross-host (huggingface.co -> *.xethub.hf.co); the
-			// stdlib drops Range on cross-host redirects, so re-attach it.
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if len(via) >= 10 {
 					return errors.New("stopped after 10 redirects")
@@ -62,9 +57,6 @@ func NewDownloaderWithBaseURL(rt http.RoundTripper, fsys FS, baseURL string) *Do
 	}
 }
 
-// fileLock returns the per-path mutex, creating it on first use. Concurrent
-// fetches of the same file serialize so the second sees the first's result and
-// skips, rather than racing on the same .partial.
 func (d *Downloader) fileLock(path string) *sync.Mutex {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -76,13 +68,8 @@ func (d *Downloader) fileLock(path string) *sync.Mutex {
 	return l
 }
 
-// ProgressFunc is called as bytes arrive for a file: done is the cumulative
-// bytes written, total is the expected size (0 if unknown).
 type ProgressFunc func(f File, done, total int64)
 
-// Fetch downloads every file of m into dir, resuming any *.partial from a prior
-// run, verifying sha256 when the catalog provides one, and committing each file
-// with an atomic rename. Already-complete files are skipped.
 func (d *Downloader) Fetch(ctx context.Context, m Model, dir string, onProgress ProgressFunc) error {
 	if err := d.fsys.MkdirAll(dir); err != nil {
 		return err
@@ -130,7 +117,6 @@ func (d *Downloader) fetchFile(ctx context.Context, m Model, f File, dir string,
 	var w io.WriteCloser
 	switch resp.StatusCode {
 	case http.StatusOK:
-		// Server ignored Range (or none requested): rewrite from scratch.
 		have = 0
 		w, err = d.fsys.Create(partial)
 	case http.StatusPartialContent:
