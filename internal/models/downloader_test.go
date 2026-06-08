@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"io/fs"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -307,6 +308,64 @@ func TestFetchRedownloadsWhenChecksumStale(t *testing.T) {
 	}
 	if got := readFile(t, fsys, filepath.Join("c", "f.bin")); got != content {
 		t.Errorf("stale file not replaced: got %q", got)
+	}
+}
+
+// mkdirFailFS fails MkdirAll, to drive fetchFile's directory-creation error path.
+type mkdirFailFS struct{ FS }
+
+func (mkdirFailFS) MkdirAll(string) error { return errors.New("mkdir denied") }
+
+func TestFetchMkdirError(t *testing.T) {
+	d := NewDownloader(rtFunc(func(*http.Request) (*http.Response, error) {
+		return resp(http.StatusOK, strings.NewReader("x")), nil
+	}), mkdirFailFS{memfs.New()})
+	if err := d.Fetch(context.Background(), oneFileModel("x"), "c", nil); err == nil {
+		t.Error("Fetch with failing MkdirAll = nil, want error")
+	}
+}
+
+// openFailFS lets Stat report a file exists (so isComplete tries to verify) but
+// fails Open, to drive verify's open-error path.
+type openFailFS struct{ *memfs.FS }
+
+func (openFailFS) Open(string) (fs.File, error) { return nil, errors.New("open denied") }
+
+func TestFetchVerifyOpenError(t *testing.T) {
+	base := memfs.New()
+	seedFile(t, base, filepath.Join("c", "f.bin"), "wrong-size-ok")
+	m := oneFileModel("wrong-size-ok") // sha won't matter; Open fails first
+	d := NewDownloader(rtFunc(func(*http.Request) (*http.Response, error) {
+		return resp(http.StatusOK, strings.NewReader("wrong-size-ok")), nil
+	}), openFailFS{base})
+	if err := d.Fetch(context.Background(), m, "c", nil); err == nil {
+		t.Error("Fetch with failing verify Open = nil, want error")
+	}
+}
+
+// readErrFile is an fs.File whose Read always errors, to drive verify's
+// io.Copy error path.
+type readErrFile struct{}
+
+func (readErrFile) Stat() (fs.FileInfo, error) { return nil, errors.New("stat denied") }
+func (readErrFile) Read([]byte) (int, error)   { return 0, errors.New("read denied") }
+func (readErrFile) Close() error               { return nil }
+
+// readErrFS reports a sized file via Stat but returns a failing reader on Open.
+type readErrFS struct{ *memfs.FS }
+
+func (r readErrFS) Stat(name string) (fs.FileInfo, error) { return r.FS.Stat(name) }
+func (readErrFS) Open(string) (fs.File, error)            { return readErrFile{}, nil }
+
+func TestFetchVerifyReadError(t *testing.T) {
+	base := memfs.New()
+	seedFile(t, base, filepath.Join("c", "f.bin"), "present")
+	m := oneFileModel("present")
+	d := NewDownloader(rtFunc(func(*http.Request) (*http.Response, error) {
+		return resp(http.StatusOK, strings.NewReader("present")), nil
+	}), readErrFS{base})
+	if err := d.Fetch(context.Background(), m, "c", nil); err == nil {
+		t.Error("Fetch with failing verify Read = nil, want error")
 	}
 }
 

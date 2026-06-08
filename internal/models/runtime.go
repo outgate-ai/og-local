@@ -8,8 +8,6 @@ import (
 	"runtime"
 )
 
-// ErrRuntimeNotFound is returned when the ONNX Runtime shared library is not
-// present and no override points at one.
 var ErrRuntimeNotFound = errors.New("models: onnx runtime shared library not found")
 
 func libName(goos string) string {
@@ -23,10 +21,8 @@ func libName(goos string) string {
 	}
 }
 
-// SharedLibName is the ONNX Runtime shared-library filename for the current OS.
 func SharedLibName() string { return libName(runtime.GOOS) }
 
-// runtimeDir is where the shared library is cached, namespaced by os/arch.
 func runtimeDir(root string) string {
 	return filepath.Join(root, "runtime", runtime.GOOS+"-"+runtime.GOARCH)
 }

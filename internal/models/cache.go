@@ -10,8 +10,6 @@ import (
 
 const manifestName = ".ogl-manifest.json"
 
-// CacheRoot resolves the cache base directory: OGL_CACHE_DIR, else
-// XDG_CACHE_HOME/og-local, else ~/.cache/og-local.
 func CacheRoot() string {
 	if v := os.Getenv("OGL_CACHE_DIR"); v != "" {
 		return v
@@ -40,8 +38,6 @@ type manifest struct {
 	Files    []string `json:"files"`
 }
 
-// IsCached reports whether every file of m is present at its expected size and
-// a matching manifest exists.
 func IsCached(fsys FS, dir string, m Model) bool {
 	mf, err := readManifest(fsys, dir)
 	if err != nil || mf.Revision != m.Revision {
@@ -59,7 +55,6 @@ func IsCached(fsys FS, dir string, m Model) bool {
 	return true
 }
 
-// WriteManifest records the completed download.
 func WriteManifest(fsys FS, dir string, m Model) error {
 	paths := make([]string, len(m.Files))
 	for i, f := range m.Files {

@@ -34,8 +34,8 @@ func NewDownloader(rt http.RoundTripper, fsys FS) *Downloader {
 	return NewDownloaderWithBaseURL(rt, fsys, hfBaseURL)
 }
 
-// NewDownloaderWithBaseURL is NewDownloader with the upstream base URL
-// overridden, for tests that serve fixtures from a local server.
+// NewDownloaderWithBaseURL overrides the upstream base URL, for tests serving
+// fixtures from a local server.
 func NewDownloaderWithBaseURL(rt http.RoundTripper, fsys FS, baseURL string) *Downloader {
 	if rt == nil {
 		rt = http.DefaultTransport

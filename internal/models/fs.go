@@ -20,7 +20,6 @@ type FS interface {
 
 type osFS struct{}
 
-// OSFS returns an FS backed by the real filesystem.
 func OSFS() FS { return osFS{} }
 
 func (osFS) Open(name string) (fs.File, error) { return os.Open(name) }
