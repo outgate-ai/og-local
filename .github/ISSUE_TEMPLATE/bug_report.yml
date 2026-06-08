@@ -1,0 +1,54 @@
+name: Bug report
+description: Something is broken or misbehaving.
+labels: ["kind/bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug.
+      placeholder: |
+        Tell us what you saw, and what you expected to see.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The smallest example that triggers the issue.
+      placeholder: |
+        1. Run `ogl ...`
+        2. Observe ...
+    validations:
+      required: true
+  - type: input
+    id: ogl-version
+    attributes:
+      label: ogl version
+      description: Output of `ogl version`.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Wrapped agent
+      options:
+        - claude
+        - codex
+        - other / not applicable
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "macOS 14.5 arm64"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Run with `-vv` and paste the output, if relevant.
+      render: shell
