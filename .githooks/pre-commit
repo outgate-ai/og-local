@@ -2,15 +2,21 @@
 set -e
 
 staged_go=$(git diff --cached --name-only --diff-filter=ACM | grep '\.go$' || true)
-if [ -n "$staged_go" ]; then
-  if ! command -v gofumpt >/dev/null 2>&1; then
-    echo "gofumpt not installed; run 'go install mvdan.cc/gofumpt@latest'" >&2
-    exit 1
-  fi
-  unformatted=$(gofumpt -l -d $staged_go 2>/dev/null || true)
-  if [ -n "$unformatted" ]; then
-    echo "files need 'make fmt':" >&2
-    echo "$unformatted" >&2
-    exit 1
-  fi
+if [ -z "$staged_go" ]; then
+  exit 0
+fi
+
+if ! command -v gofumpt >/dev/null 2>&1; then
+  echo "gofumpt not installed; run 'go install mvdan.cc/gofumpt@latest'" >&2
+  exit 1
+fi
+unformatted=$(gofumpt -l -d $staged_go 2>/dev/null || true)
+if [ -n "$unformatted" ]; then
+  echo "files need 'make fmt':" >&2
+  echo "$unformatted" >&2
+  exit 1
+fi
+
+if [ "${OGL_SKIP_PATCH_COVERAGE:-}" != "1" ]; then
+  make check-patch
 fi
