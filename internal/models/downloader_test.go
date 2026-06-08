@@ -267,7 +267,7 @@ func TestFetchProgressCallback(t *testing.T) {
 
 func TestNewDownloaderNilTransport(t *testing.T) {
 	d := NewDownloader(nil, memfs.New())
-	if d.rt == nil {
+	if d.client == nil || d.client.Transport == nil {
 		t.Error("nil transport should default to http.DefaultTransport")
 	}
 }

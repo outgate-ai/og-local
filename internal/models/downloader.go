@@ -22,7 +22,7 @@ var (
 const hfBaseURL = "https://huggingface.co"
 
 type Downloader struct {
-	rt      http.RoundTripper
+	client  *http.Client
 	fsys    FS
 	baseURL string
 
@@ -35,12 +35,31 @@ func NewDownloader(rt http.RoundTripper, fsys FS) *Downloader {
 }
 
 // NewDownloaderWithBaseURL overrides the upstream base URL, for tests serving
-// fixtures from a local server.
+// fixtures from a local server. The transport is wrapped in an http.Client so
+// HuggingFace's 302 redirects to its CDN are followed (RoundTrip alone does not).
 func NewDownloaderWithBaseURL(rt http.RoundTripper, fsys FS, baseURL string) *Downloader {
 	if rt == nil {
 		rt = http.DefaultTransport
 	}
-	return &Downloader{rt: rt, fsys: fsys, baseURL: baseURL, locks: map[string]*sync.Mutex{}}
+	return &Downloader{
+		client: &http.Client{
+			Transport: rt,
+			// HF redirects cross-host (huggingface.co -> *.xethub.hf.co); the
+			// stdlib drops Range on cross-host redirects, so re-attach it.
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) >= 10 {
+					return errors.New("stopped after 10 redirects")
+				}
+				if r := via[0].Header.Get("Range"); r != "" {
+					req.Header.Set("Range", r)
+				}
+				return nil
+			},
+		},
+		fsys:    fsys,
+		baseURL: baseURL,
+		locks:   map[string]*sync.Mutex{},
+	}
 }
 
 // fileLock returns the per-path mutex, creating it on first use. Concurrent
@@ -102,7 +121,7 @@ func (d *Downloader) fetchFile(ctx context.Context, m Model, f File, dir string,
 		req.Header.Set("Range", "bytes="+strconv.FormatInt(have, 10)+"-")
 	}
 
-	resp, err := d.rt.RoundTrip(req)
+	resp, err := d.client.Do(req)
 	if err != nil {
 		return err
 	}
