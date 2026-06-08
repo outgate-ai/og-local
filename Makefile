@@ -3,7 +3,7 @@ GIT_SHA    := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 GOBIN      := $(shell go env GOPATH)/bin
 
-GOLANGCI_LINT_VERSION := v2.1.6
+GOLANGCI_LINT_VERSION := v2.12.2
 GOFUMPT_VERSION       := latest
 
 LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(GIT_SHA) -X main.date=$(BUILD_DATE)
@@ -26,7 +26,7 @@ build:
 
 lint: tools
 	go vet ./...
-	golangci-lint run ./...
+	$(GOBIN)/golangci-lint run ./...
 
 test:
 	go test -race ./...
@@ -43,7 +43,7 @@ test-integration:
 	fi
 
 fmt: tools
-	gofumpt -w .
+	$(GOBIN)/gofumpt -w .
 
 ci: lint test-coverage build
 

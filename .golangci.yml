@@ -25,9 +25,6 @@ linters:
           disabled: true
         - name: var-naming
           disabled: false
-    gosec:
-      excludes:
-        - G304
     gocritic:
       enabled-tags:
         - diagnostic

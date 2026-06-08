@@ -2,12 +2,5 @@
 # Aspiration is 100% on everything not listed here.
 # The actual merge gate (no regression vs main) lives in .codecov.yml.
 
-# Pure DI wiring; covered by integration tests in milestone 7.
+# Pure DI wiring; meaningful tests would be integration-tier.
 cmd/ogl
-
-# ONNX inference glue; needs the real ~772 MB model loaded; covered by the
-# detector-fixtures ring in milestone 3.
-internal/pii/onnx
-
-# Generated code (none planned in v0.1; line placed defensively).
-*generated*
