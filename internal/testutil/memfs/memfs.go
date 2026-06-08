@@ -1,12 +1,11 @@
-// Package memfs is an in-memory filesystem for tests that exercise write,
-// append, rename, and remove paths (which testing/fstest.MapFS, being
-// read-only, cannot). It is safe for concurrent use.
+// Package memfs is a concurrency-safe in-memory filesystem for tests.
 package memfs
 
 import (
 	"bytes"
 	"io"
 	"io/fs"
+	"strings"
 	"sync"
 	"time"
 )
@@ -74,6 +73,17 @@ func (m *FS) Remove(name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.files, name)
+	return nil
+}
+
+func (m *FS) RemoveAll(path string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for name := range m.files {
+		if name == path || strings.HasPrefix(name, path+"/") {
+			delete(m.files, name)
+		}
+	}
 	return nil
 }
 

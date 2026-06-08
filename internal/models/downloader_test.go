@@ -23,7 +23,6 @@ func sha(data string) string {
 	return hex.EncodeToString(h[:])
 }
 
-// rtFunc adapts a function to http.RoundTripper.
 type rtFunc func(*http.Request) (*http.Response, error)
 
 func (f rtFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
@@ -36,7 +35,6 @@ func resp(status int, body io.Reader) *http.Response {
 	return &http.Response{StatusCode: status, Body: rc, Header: make(http.Header)}
 }
 
-// errReader yields the first `good` bytes of data then returns err.
 type errReader struct {
 	data []byte
 	pos  int
@@ -103,10 +101,8 @@ func TestFetchResume(t *testing.T) {
 		rangeHeaders = append(rangeHeaders, r.Header.Get("Range"))
 		calls++
 		if calls == 1 {
-			// Serve first 4 bytes then fail mid-stream.
 			return resp(http.StatusOK, &errReader{data: []byte(content), good: 4, err: errors.New("boom")}), nil
 		}
-		// Resume: server returns 206 with the remaining bytes.
 		start := len(content) - len(content[4:])
 		return resp(http.StatusPartialContent, strings.NewReader(content[start:])), nil
 	}), fsys)
@@ -136,7 +132,6 @@ func TestFetchServerIgnoresRange(t *testing.T) {
 		if calls == 1 {
 			return resp(http.StatusOK, &errReader{data: []byte(content), good: 4, err: errors.New("boom")}), nil
 		}
-		// Even though we now send Range, server replies 200 with the FULL body.
 		return resp(http.StatusOK, strings.NewReader(content)), nil
 	}), fsys)
 
@@ -144,7 +139,6 @@ func TestFetchServerIgnoresRange(t *testing.T) {
 	if err := d.Fetch(context.Background(), m, "c", nil); err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
-	// Must not have appended onto the 4 leftover bytes: content is exact, not "abcd"+full.
 	if got := readFile(t, fsys, filepath.Join("c", "f.bin")); got != content {
 		t.Errorf("content = %q, want %q (no append onto stale partial)", got, content)
 	}
@@ -190,7 +184,6 @@ func TestFetchCancellation(t *testing.T) {
 	if err := d.Fetch(ctx, m, "c", nil); err == nil {
 		t.Fatal("Fetch should fail when context is cancelled mid-stream")
 	}
-	// Partial should remain for a later resume.
 	if _, err := fsys.Stat(filepath.Join("c", "f.bin.partial")); err != nil {
 		t.Error("partial should be left intact after cancellation")
 	}
@@ -298,7 +291,6 @@ func TestFetchRedownloadsWhenChecksumStale(t *testing.T) {
 	const content = "fresh content"
 	fsys := memfs.New()
 	m := oneFileModel(content)
-	// Pre-seed a file with the right size but wrong bytes (stale/corrupt).
 	seedFile(t, fsys, filepath.Join("c", "f.bin"), strings.Repeat("X", len(content)))
 
 	d := NewDownloader(rtFunc(func(*http.Request) (*http.Response, error) {
@@ -369,7 +361,6 @@ func TestFetchRedirectReattachesRange(t *testing.T) {
 	}
 }
 
-// mkdirFailFS fails MkdirAll, to drive fetchFile's directory-creation error path.
 type mkdirFailFS struct{ FS }
 
 func (mkdirFailFS) MkdirAll(string) error { return errors.New("mkdir denied") }
@@ -383,8 +374,6 @@ func TestFetchMkdirError(t *testing.T) {
 	}
 }
 
-// openFailFS lets Stat report a file exists (so isComplete tries to verify) but
-// fails Open, to drive verify's open-error path.
 type openFailFS struct{ *memfs.FS }
 
 func (openFailFS) Open(string) (fs.File, error) { return nil, errors.New("open denied") }
@@ -401,15 +390,12 @@ func TestFetchVerifyOpenError(t *testing.T) {
 	}
 }
 
-// readErrFile is an fs.File whose Read always errors, to drive verify's
-// io.Copy error path.
 type readErrFile struct{}
 
 func (readErrFile) Stat() (fs.FileInfo, error) { return nil, errors.New("stat denied") }
 func (readErrFile) Read([]byte) (int, error)   { return 0, errors.New("read denied") }
 func (readErrFile) Close() error               { return nil }
 
-// readErrFS reports a sized file via Stat but returns a failing reader on Open.
 type readErrFS struct{ *memfs.FS }
 
 func (r readErrFS) Stat(name string) (fs.FileInfo, error) { return r.FS.Stat(name) }
@@ -424,6 +410,48 @@ func TestFetchVerifyReadError(t *testing.T) {
 	}), readErrFS{base})
 	if err := d.Fetch(context.Background(), m, "c", nil); err == nil {
 		t.Error("Fetch with failing verify Read = nil, want error")
+	}
+}
+
+func TestFetchRedownloadsWhenSizeWrong(t *testing.T) {
+	const content = "exact-bytes"
+	fsys := memfs.New()
+	m := oneFileModel(content)
+	seedFile(t, fsys, filepath.Join("c", "f.bin"), "too-short")
+
+	calls := 0
+	d := NewDownloader(rtFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		return resp(http.StatusOK, strings.NewReader(content)), nil
+	}), fsys)
+
+	if err := d.Fetch(context.Background(), m, "c", nil); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if calls == 0 {
+		t.Error("wrong-sized file was treated as complete; expected re-download")
+	}
+	if got := readFile(t, fsys, filepath.Join("c", "f.bin")); got != content {
+		t.Errorf("content = %q, want %q", got, content)
+	}
+}
+
+func TestIsCompleteNoChecksumSkips(t *testing.T) {
+	const content = "no-sha"
+	fsys := memfs.New()
+	m := Model{Name: "m", Repo: "o/m", Revision: "r", Files: []File{{Path: "f.bin", Size: int64(len(content))}}}
+	seedFile(t, fsys, filepath.Join("c", "f.bin"), content)
+
+	calls := 0
+	d := NewDownloader(rtFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		return resp(http.StatusOK, strings.NewReader(content)), nil
+	}), fsys)
+	if err := d.Fetch(context.Background(), m, "c", nil); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if calls != 0 {
+		t.Errorf("right-size no-sha file re-downloaded (%d calls), want skip", calls)
 	}
 }
 

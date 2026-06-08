@@ -37,6 +37,19 @@ func (p puller) list() []Cached {
 	return out
 }
 
+func (p puller) delete(name string) (bool, error) {
+	m, err := resolve(name)
+	if err != nil {
+		return false, err
+	}
+	dir := ModelDir(p.root, m)
+	present := IsCached(p.fsys, dir, m)
+	if err := p.fsys.RemoveAll(dir); err != nil {
+		return false, err
+	}
+	return present, nil
+}
+
 func Pull(ctx context.Context, name string, onProgress ProgressFunc) error {
 	return defaultPuller().pull(ctx, name, onProgress)
 }
@@ -47,6 +60,8 @@ type Cached struct {
 }
 
 func List() []Cached { return defaultPuller().list() }
+
+func Delete(name string) (bool, error) { return defaultPuller().delete(name) }
 
 func resolve(name string) (Model, error) {
 	if name == "" {

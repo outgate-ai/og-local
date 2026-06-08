@@ -79,6 +79,56 @@ func TestPullerPullUnknown(t *testing.T) {
 	}
 }
 
+func TestPullerDelete(t *testing.T) {
+	const body = `{"ok":true}`
+	sum := sha256.Sum256([]byte(body))
+	p := testPuller(t, body)
+	m := Model{Name: "openai/privacy-filter", Repo: "openai/privacy-filter", Revision: "rev"}
+	m.Files = []File{{Path: "config.json", Size: int64(len(body)), SHA256: hex.EncodeToString(sum[:])}}
+	withCatalogModel(t, m)
+
+	if err := p.pull(context.Background(), m.Name, nil); err != nil {
+		t.Fatalf("pull: %v", err)
+	}
+	present, err := p.delete(m.Name)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if !present {
+		t.Error("delete reported model was not present, but it was just pulled")
+	}
+	for _, c := range p.list() {
+		if c.Name == m.Name && c.Present {
+			t.Error("model still present after delete")
+		}
+	}
+}
+
+func TestPullerDeleteAbsent(t *testing.T) {
+	p := testPuller(t, "x")
+	present, err := p.delete("openai/privacy-filter")
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if present {
+		t.Error("delete of never-cached model reported present")
+	}
+}
+
+func TestPullerDeleteUnknown(t *testing.T) {
+	p := testPuller(t, "x")
+	if _, err := p.delete("nope/missing"); err == nil {
+		t.Error("delete of unknown model = nil, want error")
+	}
+}
+
+func TestPublicDelete(t *testing.T) {
+	t.Setenv("OGL_CACHE_DIR", t.TempDir())
+	if _, err := Delete("openai/privacy-filter"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+}
+
 func TestPublicPullAndList(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("OGL_CACHE_DIR", root)

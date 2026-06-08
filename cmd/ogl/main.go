@@ -23,6 +23,7 @@ Usage:
 Commands:
   model pull [name]   Download a model into the cache (default: openai/privacy-filter)
   model list          List catalog models and their cache status
+  model delete <name> Remove a cached model from disk
   version             Print build information
   help                Print this help
 
@@ -63,8 +64,9 @@ func printVersion() {
 }
 
 const modelUsage = `Usage:
-  ogl model pull [name]   Download a model into the cache
-  ogl model list          List catalog models and their cache status
+  ogl model pull [name]     Download a model into the cache
+  ogl model list            List catalog models and their cache status
+  ogl model delete <name>   Remove a cached model from disk
 `
 
 func runModel(args []string) int {
@@ -101,6 +103,22 @@ func runModel(args []string) int {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "pull failed: %v\n", err)
 			return 1
+		}
+		return 0
+	case "delete":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: ogl model delete <name>")
+			return 2
+		}
+		present, err := models.Delete(args[1])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "delete failed: %v\n", err)
+			return 1
+		}
+		if present {
+			fmt.Printf("removed %s\n", args[1])
+		} else {
+			fmt.Printf("%s was not cached\n", args[1])
 		}
 		return 0
 	default:

@@ -138,6 +138,24 @@ func TestRemove(t *testing.T) {
 	}
 }
 
+func TestRemoveAll(t *testing.T) {
+	m := New()
+	write(t, m, "dir/a", "1")
+	write(t, m, "dir/sub/b", "2")
+	write(t, m, "other/c", "3")
+	if err := m.RemoveAll("dir"); err != nil {
+		t.Fatalf("RemoveAll: %v", err)
+	}
+	for _, gone := range []string{"dir/a", "dir/sub/b"} {
+		if _, err := m.Stat(gone); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("%s present after RemoveAll", gone)
+		}
+	}
+	if _, err := m.Stat("other/c"); err != nil {
+		t.Error("RemoveAll removed a sibling outside the path")
+	}
+}
+
 func TestMkdirAll(t *testing.T) {
 	if err := New().MkdirAll("any/path"); err != nil {
 		t.Errorf("MkdirAll = %v, want nil", err)

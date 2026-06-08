@@ -71,4 +71,11 @@ func TestOSFS(t *testing.T) {
 	if _, err := fsys.Stat(dst); !errors.Is(err, fs.ErrNotExist) {
 		t.Error("file present after Remove")
 	}
+
+	if err := fsys.RemoveAll(filepath.Join(dir, "sub")); err != nil {
+		t.Fatalf("RemoveAll: %v", err)
+	}
+	if _, err := fsys.Stat(filepath.Join(dir, "sub")); !errors.Is(err, fs.ErrNotExist) {
+		t.Error("dir present after RemoveAll")
+	}
 }

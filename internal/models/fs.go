@@ -14,6 +14,7 @@ type FS interface {
 	Rename(oldpath, newpath string) error
 	MkdirAll(path string) error
 	Remove(name string) error
+	RemoveAll(path string) error
 }
 
 type osFS struct{}
@@ -35,3 +36,5 @@ func (osFS) Rename(oldpath, newpath string) error { return os.Rename(oldpath, ne
 func (osFS) MkdirAll(path string) error { return os.MkdirAll(path, 0o750) }
 
 func (osFS) Remove(name string) error { return os.Remove(name) }
+
+func (osFS) RemoveAll(path string) error { return os.RemoveAll(path) }
