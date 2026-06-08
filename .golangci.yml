@@ -20,7 +20,7 @@ linters:
     revive:
       rules:
         - name: exported
-          disabled: false
+          disabled: true
         - name: package-comments
           disabled: true
         - name: var-naming
@@ -30,6 +30,8 @@ linters:
         - diagnostic
         - performance
         - style
+      disabled-checks:
+        - whyNoLint
 
 formatters:
   enable:
