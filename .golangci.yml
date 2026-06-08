@@ -25,6 +25,9 @@ linters:
           disabled: true
         - name: var-naming
           disabled: false
+    gosec:
+      excludes:
+        - G304 # filesystem wrapper legitimately opens caller-supplied paths
     gocritic:
       enabled-tags:
         - diagnostic
