@@ -22,18 +22,25 @@ var (
 const hfBaseURL = "https://huggingface.co"
 
 type Downloader struct {
-	rt   http.RoundTripper
-	fsys FS
+	rt      http.RoundTripper
+	fsys    FS
+	baseURL string
 
 	mu    sync.Mutex
 	locks map[string]*sync.Mutex // serializes concurrent fetches of the same file
 }
 
 func NewDownloader(rt http.RoundTripper, fsys FS) *Downloader {
+	return NewDownloaderWithBaseURL(rt, fsys, hfBaseURL)
+}
+
+// NewDownloaderWithBaseURL is NewDownloader with the upstream base URL
+// overridden, for tests that serve fixtures from a local server.
+func NewDownloaderWithBaseURL(rt http.RoundTripper, fsys FS, baseURL string) *Downloader {
 	if rt == nil {
 		rt = http.DefaultTransport
 	}
-	return &Downloader{rt: rt, fsys: fsys, locks: map[string]*sync.Mutex{}}
+	return &Downloader{rt: rt, fsys: fsys, baseURL: baseURL, locks: map[string]*sync.Mutex{}}
 }
 
 // fileLock returns the per-path mutex, creating it on first use. Concurrent
@@ -86,7 +93,7 @@ func (d *Downloader) fetchFile(ctx context.Context, m Model, f File, dir string,
 	partial := final + ".partial"
 	have := d.partialSize(partial)
 
-	url := fmt.Sprintf("%s/%s/resolve/%s/%s", hfBaseURL, m.Repo, m.Revision, f.Path)
+	url := fmt.Sprintf("%s/%s/resolve/%s/%s", d.baseURL, m.Repo, m.Revision, f.Path)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return err

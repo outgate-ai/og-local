@@ -57,6 +57,26 @@ jobs:
           path: coverage.html
           retention-days: 30
 
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: make test-integration
+      - name: Upload integration coverage to Codecov
+        if: env.CODECOV_TOKEN != ''
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage-integration.out
+          flags: integration
+          fail_ci_if_error: true
+
   build:
     runs-on: ${{ matrix.os }}
     strategy:

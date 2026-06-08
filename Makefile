@@ -37,7 +37,7 @@ test-coverage:
 
 test-integration:
 	@if [ -d ./internal/integration ]; then \
-	  go test -tags=integration -race -covermode=atomic -coverprofile=coverage-integration.out ./internal/integration/...; \
+	  go test -tags=integration -race -covermode=atomic -coverprofile=coverage-integration.out -coverpkg=./internal/... ./internal/integration/...; \
 	else \
 	  echo "no integration package yet; skipping"; \
 	fi
