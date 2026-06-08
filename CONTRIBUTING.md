@@ -22,7 +22,7 @@ make ci       # lint + tests + coverage + build
 
 - Open a PR against `main`.
 - One review is required.
-- CI (`lint`, `test`, `build`, `goreleaser-check`, `commit-lint`) must be green.
+- CI must be green (lint, the cross-OS test and build matrix, goreleaser-check, commit-lint).
 - Squash-merge keeps `main` history linear.
 
 ## Code of conduct
