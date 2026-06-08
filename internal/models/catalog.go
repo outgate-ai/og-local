@@ -3,17 +3,13 @@ package models
 type Model struct {
 	Name     string
 	Repo     string
-	Revision string // pinned commit sha, never a moving tag
+	Revision string
 	Files    []File
 }
 
 type File struct {
-	Path string
-	Size int64
-	// SHA256 is the lowercase hex digest verified after download. Empty means
-	// the file is Xet-backed and HF does not publish a plain sha256; the
-	// downloader then verifies size + atomic-rename only. Populated for files
-	// whose digest we can pin (and for test fixtures, computed locally).
+	Path   string
+	Size   int64
 	SHA256 string
 }
 
@@ -36,11 +32,11 @@ var catalog = []Model{
 		Repo:     "knowledgator/gliner-pii-small-v1.0",
 		Revision: "d21aad5b4a7ec82b3d0970fd1ac74a12c087d85e",
 		Files: []File{
-			{Path: "onnx/model.onnx", Size: 0},
-			{Path: "tokenizer.json", Size: 0},
-			{Path: "tokenizer_config.json", Size: 0},
-			{Path: "special_tokens_map.json", Size: 0},
-			{Path: "gliner_config.json", Size: 0},
+			{Path: "onnx/model.onnx", Size: 326820148},
+			{Path: "tokenizer.json", Size: 3583593},
+			{Path: "tokenizer_config.json", Size: 21214},
+			{Path: "special_tokens_map.json", Size: 694},
+			{Path: "gliner_config.json", Size: 4316},
 		},
 	},
 }

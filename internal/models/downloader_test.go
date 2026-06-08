@@ -8,10 +8,12 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/outgate-ai/og-local/internal/testutil/memfs"
 )
@@ -308,6 +310,62 @@ func TestFetchRedownloadsWhenChecksumStale(t *testing.T) {
 	}
 	if got := readFile(t, fsys, filepath.Join("c", "f.bin")); got != content {
 		t.Errorf("stale file not replaced: got %q", got)
+	}
+}
+
+func TestFetchFollowsRedirect(t *testing.T) {
+	const content = "redirected-body"
+	mux := http.NewServeMux()
+	mux.HandleFunc("/cdn/blob", func(w http.ResponseWriter, r *http.Request) {
+		if rng := r.Header.Get("Range"); rng != "" {
+			w.Header().Set("Content-Range", "bytes "+rng)
+			w.WriteHeader(http.StatusPartialContent)
+		}
+		_, _ = io.WriteString(w, content)
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/cdn/blob", http.StatusFound)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	fsys := memfs.New()
+	m := oneFileModel(content)
+	d := NewDownloaderWithBaseURL(http.DefaultTransport, fsys, srv.URL)
+	if err := d.Fetch(context.Background(), m, "c", nil); err != nil {
+		t.Fatalf("Fetch through redirect: %v", err)
+	}
+	if got := readFile(t, fsys, filepath.Join("c", "f.bin")); got != content {
+		t.Errorf("content = %q, want %q", got, content)
+	}
+}
+
+func TestFetchRedirectReattachesRange(t *testing.T) {
+	const content = "0123456789abcdef"
+	var cdnRange string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/cdn/blob", func(w http.ResponseWriter, r *http.Request) {
+		cdnRange = r.Header.Get("Range")
+		http.ServeContent(w, r, "blob", time.Time{}, strings.NewReader(content))
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/cdn/blob", http.StatusFound)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	fsys := memfs.New()
+	seedFile(t, fsys, filepath.Join("c", "f.bin.partial"), content[:6])
+	m := oneFileModel(content)
+	d := NewDownloaderWithBaseURL(http.DefaultTransport, fsys, srv.URL)
+	if err := d.Fetch(context.Background(), m, "c", nil); err != nil {
+		t.Fatalf("Fetch resume through redirect: %v", err)
+	}
+	if cdnRange != "bytes=6-" {
+		t.Errorf("CDN saw Range %q, want bytes=6- (range must survive the redirect)", cdnRange)
+	}
+	if got := readFile(t, fsys, filepath.Join("c", "f.bin")); got != content {
+		t.Errorf("content = %q, want %q", got, content)
 	}
 }
 
