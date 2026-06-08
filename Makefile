@@ -42,10 +42,22 @@ test-integration:
 	  echo "no integration package yet; skipping"; \
 	fi
 
+PATCH_BASE      ?= origin/main
+PATCH_THRESHOLD ?= 90
+
+check-patch:
+	@go test -covermode=atomic -coverprofile=coverage.patch.out -coverpkg=./internal/... ./... >/dev/null
+	@if [ -d ./internal/integration ]; then \
+	  go test -tags=integration -covermode=atomic -coverprofile=coverage.patch.int.out -coverpkg=./internal/... ./internal/integration/... >/dev/null; \
+	  tail -n +2 coverage.patch.int.out >> coverage.patch.out 2>/dev/null || true; \
+	fi
+	@./scripts/check-patch-coverage.sh $(PATCH_BASE) $(PATCH_THRESHOLD) coverage.patch.out
+	@rm -f coverage.patch.out coverage.patch.int.out
+
 fmt: tools
 	$(GOBIN)/gofumpt -w .
 
-ci: lint test-coverage build
+ci: lint test-coverage build check-patch
 
 clean:
-	rm -rf ./bin coverage.out coverage.html coverage-integration.out
+	rm -rf ./bin coverage.out coverage.html coverage-integration.out coverage.patch.out coverage.patch.int.out

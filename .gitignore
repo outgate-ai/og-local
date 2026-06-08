@@ -19,3 +19,5 @@ Thumbs.db
 
 # Local model cache during dev
 /.ogl-cache/
+/coverage.patch.out
+/coverage.patch.int.out
