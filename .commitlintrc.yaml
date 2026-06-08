@@ -1,0 +1,29 @@
+extends:
+  - "@commitlint/config-conventional"
+rules:
+  type-enum:
+    - 2
+    - always
+    - [feat, fix, chore, docs, test, refactor, perf, build, ci, style, revert]
+  subject-max-length:
+    - 2
+    - always
+    - 70
+  body-max-line-length:
+    - 2
+    - always
+    - 100
+  subject-case:
+    - 2
+    - never
+    - [pascal-case, upper-case]
+  subject-empty:
+    - 2
+    - never
+  type-case:
+    - 2
+    - always
+    - lower-case
+  type-empty:
+    - 2
+    - never

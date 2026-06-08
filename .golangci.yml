@@ -1,0 +1,48 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+  modules-download-mode: readonly
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - gocritic
+    - gosec
+    - govet
+    - ineffassign
+    - revive
+    - staticcheck
+    - unused
+  settings:
+    revive:
+      rules:
+        - name: exported
+          disabled: false
+        - name: package-comments
+          disabled: true
+        - name: var-naming
+          disabled: false
+    gosec:
+      excludes:
+        - G304
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+        - style
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/outgate-ai/og-local
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
