@@ -33,6 +33,7 @@ Commands:
 
 Environment:
   OGL_CACHE_DIR       Override the model cache directory (default: ~/.cache/og-local)
+  OGL_DEBUG           Set to 1 to log proxy activity to stderr (no PII values)
 `
 
 func main() {

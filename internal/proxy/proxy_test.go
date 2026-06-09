@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/outgate-ai/og-local/internal/obs"
 	"github.com/outgate-ai/og-local/internal/pii"
 	"github.com/outgate-ai/og-local/internal/provider"
 	"github.com/outgate-ai/og-local/internal/testutil/fakeclock"
@@ -288,6 +290,37 @@ func TestProxyStreamingWithoutFlusher(t *testing.T) {
 	h.ServeHTTP(nonFlushWriter{rr}, req)
 	if out := rr.Body.String(); !strings.Contains(out, "alice@example.com") {
 		t.Errorf("non-flusher restore failed: %s", out)
+	}
+}
+
+func TestProxyDebugLogsRouteAndResponse(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	var buf bytes.Buffer
+	m := testMinter(t)
+	h := New(Config{
+		Minter:       m,
+		Redactor:     &fakeRedactor{pairs: []pii.Pair{{From: "alice@example.com", To: "OG_PRIVATE_EMAIL_abc123"}}},
+		UpstreamBase: upstream.URL,
+		Client:       upstream.Client(),
+		Logger:       obs.Debug(&buf),
+	})
+	doRequest(t, h, "POST", keyPath(m.Mint(), "/v1/messages"),
+		`{"model":"claude","messages":[{"role":"user","content":"mail alice@example.com"}]}`, nil)
+
+	out := buf.String()
+	for _, want := range []string{"method=POST", "path=/v1/messages", "redactable=true", "status=200", "mode=buffered-restore"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("debug log missing %q in:\n%s", want, out)
+		}
+	}
+	// The agent's request content must not appear in proxy debug output.
+	if strings.Contains(out, "alice@example.com") {
+		t.Errorf("proxy debug leaked request content: %s", out)
 	}
 }
 

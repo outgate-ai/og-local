@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 
+	"github.com/outgate-ai/og-local/internal/obs"
 	"github.com/outgate-ai/og-local/internal/pii"
 	"github.com/outgate-ai/og-local/internal/provider"
 	"github.com/outgate-ai/og-local/internal/stream"
@@ -24,6 +26,7 @@ type Config struct {
 	UpstreamBase string
 	Client       *http.Client
 	MaxBodyBytes int64
+	Logger       *slog.Logger
 }
 
 type Handler struct {
@@ -32,6 +35,7 @@ type Handler struct {
 	upstreamBase string
 	client       *http.Client
 	maxBodyBytes int64
+	log          *slog.Logger
 }
 
 func New(cfg Config) *Handler { //nolint:gocritic // one-shot constructor; value config reads clearly at the call site.
@@ -49,6 +53,7 @@ func New(cfg Config) *Handler { //nolint:gocritic // one-shot constructor; value
 		upstreamBase: strings.TrimRight(cfg.UpstreamBase, "/"),
 		client:       client,
 		maxBodyBytes: maxBody,
+		log:          obs.OrDiscard(cfg.Logger),
 	}
 }
 
@@ -66,12 +71,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ep := provider.Route(r.Method, path)
+	h.log.Debug("request", "method", r.Method, "path", path,
+		"redactable", ep.Redactable(), "req_bytes", len(body))
 
 	var mapping pii.Mapping
 	outBody := body
 	if ep.Redactable() {
 		redacted, m, rerr := h.redactor.Redact(r.Context(), ep, body)
 		if rerr != nil {
+			h.log.Debug("redaction failed", "path", path, "err", rerr)
 			writeError(w, http.StatusBadGateway, "redaction failed")
 			return
 		}
@@ -88,10 +96,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := h.client.Do(upReq) //nolint:gosec // forwarding to the operator-configured upstream is this tool's purpose.
 	if err != nil {
+		h.log.Debug("upstream unreachable", "url", h.upstreamBase+path, "err", err)
 		writeError(w, http.StatusBadGateway, "upstream unreachable")
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
+
+	mode := "passthrough"
+	switch {
+	case len(mapping) == 0:
+	case isEventStream(resp.Header):
+		mode = "stream-restore"
+	default:
+		mode = "buffered-restore"
+	}
+	h.log.Debug("upstream response", "status", resp.StatusCode,
+		"content_type", resp.Header.Get("Content-Type"), "mode", mode, "restorable", len(mapping))
 
 	h.writeResponse(w, ep, resp, mapping)
 }

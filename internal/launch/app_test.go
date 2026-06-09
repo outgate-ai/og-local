@@ -1,12 +1,14 @@
 package launch
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/outgate-ai/og-local/internal/obs"
 	"github.com/outgate-ai/og-local/internal/pii"
 	"github.com/outgate-ai/og-local/internal/provider"
 	"github.com/outgate-ai/og-local/internal/testutil/fakeclock"
@@ -110,6 +112,27 @@ func TestDefaultAppWiring(t *testing.T) {
 func TestRealClockNow(t *testing.T) {
 	if (realClock{}).Now().IsZero() {
 		t.Error("realClock returned zero time")
+	}
+}
+
+func TestAppMainWithDebugLogger(t *testing.T) {
+	var buf bytes.Buffer
+	runner := &recordingRunner{exitCode: 0}
+	app := testApp(runner, []string{"ANTHROPIC_API_KEY=sk-real"})
+	app.Logger = obs.Debug(&buf)
+	if _, err := app.Main(context.Background(), provider.Anthropic, []string{"claude", "hi"}); err != nil {
+		t.Fatalf("main: %v", err)
+	}
+}
+
+func TestDefaultAppReadsOGLDebug(t *testing.T) {
+	t.Setenv("OGL_DEBUG", "1")
+	if DefaultApp().Logger == nil {
+		t.Error("OGL_DEBUG set: expected a logger")
+	}
+	t.Setenv("OGL_DEBUG", "")
+	if DefaultApp().Logger != nil {
+		t.Error("OGL_DEBUG unset: expected nil logger (discard)")
 	}
 }
 

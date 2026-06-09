@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/outgate-ai/og-local/internal/obs"
 	"github.com/outgate-ai/og-local/internal/pii"
 	"github.com/outgate-ai/og-local/internal/provider"
 	"github.com/outgate-ai/og-local/internal/storage/memory"
@@ -170,6 +171,47 @@ func TestRedactInvalidBody(t *testing.T) {
 	ep := provider.Route("POST", "/v1/messages")
 	if _, _, err := p.Redact(context.Background(), ep, []byte(`{bad json`)); err == nil {
 		t.Error("expected error on invalid body")
+	}
+}
+
+func TestRedactDebugLogsNeverLeakPII(t *testing.T) {
+	const secret = "alice@example.com"
+	usr := "email " + secret
+	det := &fakeDetector{spansFor: map[string][]pii.Span{
+		usr: {spanOf(usr, secret, pii.ClassEmail)},
+	}}
+	var buf bytes.Buffer
+	p := New(det, newCache(t), WithLogger(obs.Debug(&buf)))
+	body := []byte(`{"model":"claude","messages":[{"role":"user","content":"email alice@example.com"}]}`)
+	ep := provider.Route("POST", "/v1/messages")
+	_, m, err := p.Redact(context.Background(), ep, body)
+	if err != nil {
+		t.Fatalf("redact: %v", err)
+	}
+
+	logged := buf.String()
+	if logged == "" {
+		t.Fatal("expected debug output")
+	}
+	// The whole point: the original PII must NEVER appear in the logs.
+	if strings.Contains(logged, secret) {
+		t.Errorf("debug log leaked the original PII value: %s", logged)
+	}
+	// Safe metadata SHOULD appear: the class and the opaque placeholder.
+	if !strings.Contains(logged, string(pii.ClassEmail)) {
+		t.Errorf("debug log missing span class: %s", logged)
+	}
+	if len(m) == 1 && !strings.Contains(logged, m[0].To) {
+		t.Errorf("debug log missing placeholder %q: %s", m[0].To, logged)
+	}
+}
+
+func TestRedactWithLoggerNilIsSafe(t *testing.T) {
+	det := &fakeDetector{spansFor: map[string][]pii.Span{}}
+	p := New(det, newCache(t), WithLogger(nil))
+	body := []byte(`{"model":"claude","messages":[{"role":"user","content":"hi"}]}`)
+	if _, _, err := p.Redact(context.Background(), provider.Route("POST", "/v1/messages"), body); err != nil {
+		t.Fatalf("nil logger must be safe: %v", err)
 	}
 }
 
