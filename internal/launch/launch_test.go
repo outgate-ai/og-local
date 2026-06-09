@@ -214,3 +214,87 @@ func TestExecRunnerBadCommand(t *testing.T) {
 		t.Error("expected error for missing executable")
 	}
 }
+
+func TestRunPrepareChildAddsToEnv(t *testing.T) {
+	runner := &recordingRunner{exitCode: 0}
+	var gotURL, gotTok string
+	code, err := Run(context.Background(), Options{
+		Kind:        provider.OpenAIChat,
+		Args:        []string{"codex"},
+		Env:         map[string]string{"OPENAI_API_KEY": "sk-real"},
+		LoopbackTok: "ogl_live_tok",
+		Handler:     okHandler(),
+		Runner:      runner,
+		PrepareChild: func(loopbackURL, token string) (map[string]string, error) {
+			gotURL, gotTok = loopbackURL, token
+			return map[string]string{"CODEX_HOME": "/tmp/x"}, nil
+		},
+	})
+	if err != nil || code != 0 {
+		t.Fatalf("code=%d err=%v", code, err)
+	}
+	if !strings.HasPrefix(gotURL, "http://127.0.0.1:") || gotTok != "ogl_live_tok" {
+		t.Errorf("hook got url=%q tok=%q", gotURL, gotTok)
+	}
+	if got := envValue(runner.env, "CODEX_HOME"); got != "/tmp/x" {
+		t.Errorf("CODEX_HOME = %q, want /tmp/x", got)
+	}
+	// The base-URL overlay still applies alongside the hook's additions.
+	if got := envValue(runner.env, "OPENAI_BASE_URL"); !strings.Contains(got, "/_k/") {
+		t.Errorf("OPENAI_BASE_URL overlay lost: %q", got)
+	}
+}
+
+func TestRunNilPrepareChildNoCodexHome(t *testing.T) {
+	runner := &recordingRunner{exitCode: 0}
+	_, err := Run(context.Background(), Options{
+		Kind:        provider.Anthropic,
+		Args:        []string{"claude"},
+		Env:         map[string]string{"ANTHROPIC_API_KEY": "sk"},
+		LoopbackTok: "tok",
+		Handler:     okHandler(),
+		Runner:      runner,
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := envValue(runner.env, "CODEX_HOME"); got != "" {
+		t.Errorf("claude must not get CODEX_HOME, got %q", got)
+	}
+}
+
+func TestRunPrepareChildErrorFailsLaunch(t *testing.T) {
+	runner := &recordingRunner{exitCode: 0}
+	code, err := Run(context.Background(), Options{
+		Kind:        provider.OpenAIChat,
+		Args:        []string{"codex"},
+		Env:         map[string]string{"OPENAI_API_KEY": "sk"},
+		LoopbackTok: "tok",
+		Handler:     okHandler(),
+		Runner:      runner,
+		PrepareChild: func(string, string) (map[string]string, error) {
+			return nil, errors.New("prepare failed")
+		},
+	})
+	if err == nil {
+		t.Error("expected PrepareChild error to fail the launch")
+	}
+	if code != 1 {
+		t.Errorf("code = %d, want 1", code)
+	}
+	if runner.argv != nil {
+		t.Error("runner must not be invoked when PrepareChild fails")
+	}
+}
+
+func TestNewCodexPrepareWiresPrepareCodexHome(t *testing.T) {
+	home := t.TempDir()
+	prep := newCodexPrepare(osCodexFS{}, home)
+	env, err := prep("http://127.0.0.1:5000", "tok")
+	if err != nil {
+		t.Fatalf("prep: %v", err)
+	}
+	if env["CODEX_HOME"] != codexHomeDir(home) {
+		t.Errorf("CODEX_HOME = %q", env["CODEX_HOME"])
+	}
+}

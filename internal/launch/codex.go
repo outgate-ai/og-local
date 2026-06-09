@@ -49,6 +49,12 @@ func prepareCodexHome(fsys codexFS, userHome, loopbackURL, token string) (map[st
 	return map[string]string{"CODEX_HOME": dir}, nil
 }
 
+func newCodexPrepare(fsys codexFS, userHome string) func(loopbackURL, token string) (map[string]string, error) {
+	return func(loopbackURL, token string) (map[string]string, error) {
+		return prepareCodexHome(fsys, userHome, loopbackURL, token)
+	}
+}
+
 func renderCodexConfig(baseURL string) string {
 	return `profile = "ogl"
 
