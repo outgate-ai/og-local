@@ -70,7 +70,7 @@ func (t *Transformer) line(line []byte) error {
 	payload := line[len(dataPrefix):]
 	ev, ok := t.codec.Event(payload)
 	if !ok {
-		return t.emit(append(line, '\n'))
+		return t.emitData(payload)
 	}
 	switch ev.Kind {
 	case provider.EvDelta:
@@ -79,10 +79,19 @@ func (t *Transformer) line(line []byte) error {
 		if err := t.resetBlock(); err != nil {
 			return err
 		}
-		return t.emit(append(line, '\n'))
+		return t.emitData(payload)
 	default:
-		return t.emit(append(line, '\n'))
+		return t.emitData(payload)
 	}
+}
+
+// emitData passes a non-delta data payload through, restoring any placeholders
+// it carries. Terminal events (e.g. response.output_text.done, output_item.done)
+// embed the full assistant message, which the agent reads as the final answer —
+// so the originals must be restored there too, not only in the incremental deltas.
+func (t *Transformer) emitData(payload []byte) error {
+	restored := t.mapping.Restore(string(payload))
+	return t.emit([]byte(dataPrefix + restored + "\n"))
 }
 
 func (t *Transformer) delta(ev provider.Event) error {
