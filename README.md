@@ -41,6 +41,8 @@ ogl codex --model gpt-5.1 "review this PR"
 
 Most agents are redirected with their `*_BASE_URL` env var. Codex ignores that variable, so `ogl codex` instead writes a dedicated provider config under `~/.codex/ogl` (via `CODEX_HOME`) pointing Codex at the proxy; your own `~/.codex/config.toml` is left untouched.
 
+`ogl codex` works with both Codex sign-in modes. With an API key (`OPENAI_API_KEY`, or `auth_mode = "apikey"` in `~/.codex/auth.json`) it forwards to `api.openai.com`. With a ChatGPT subscription login it forwards to `chatgpt.com/backend-api/codex`, the endpoint that login's token is scoped for — sending those requests to `api.openai.com` would fail. The mode is read from `~/.codex/auth.json`, with `OPENAI_API_KEY` taking precedence; either way the proxy forwards your existing Codex credentials and redacts the prompt body in between.
+
 No daemon, no PID file, no global state.
 
 ## How it works (one paragraph)
