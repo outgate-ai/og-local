@@ -42,6 +42,9 @@ test-integration:
 	  echo "no integration package yet; skipping"; \
 	fi
 
+test-detector:
+	CGO_ENABLED=1 go test -tags onnx ./internal/pii/onnx/...
+
 PATCH_BASE      ?= origin/main
 PATCH_THRESHOLD ?= 90
 
