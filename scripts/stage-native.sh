@@ -32,7 +32,24 @@ ort_asset() {
 	linux/amd64) echo "onnxruntime-linux-x64-${ORT_VERSION}.tgz onnxruntime-linux-x64-${ORT_VERSION} libonnxruntime.so" ;;
 	linux/arm64) echo "onnxruntime-linux-aarch64-${ORT_VERSION}.tgz onnxruntime-linux-aarch64-${ORT_VERSION} libonnxruntime.so" ;;
 	darwin/arm64) echo "onnxruntime-osx-arm64-${ORT_VERSION}.tgz onnxruntime-osx-arm64-${ORT_VERSION} libonnxruntime.dylib" ;;
+	windows/amd64) echo "onnxruntime-win-x64-${ORT_VERSION}.zip onnxruntime-win-x64-${ORT_VERSION} onnxruntime.dll" ;;
 	*) echo "stage-native: no onnxruntime build for $1" >&2; return 1 ;;
+	esac
+}
+
+stage_tokenizers() {
+	target="$1"
+	native_dir="$2"
+	echo "stage-native: $target tokenizers -> $native_dir/libtokenizers.a" >&2
+	case "$target" in
+	windows/amd64)
+		# No upstream prebuilt; build the staticlib from the pinned source.
+		"$(dirname "$0")/build-tokenizers.sh" "$target"
+		;;
+	*)
+		tok="$(tokenizers_asset "$target")"
+		curl -fsSL "https://github.com/daulet/tokenizers/releases/download/${TOKENIZERS_VERSION}/${tok}" | tar xz -C "$native_dir"
+		;;
 	esac
 }
 
@@ -44,16 +61,22 @@ stage_target() {
 	lib_dir="$STAGING_ROOT/$os-$arch/lib"
 	mkdir -p "$native_dir" "$lib_dir"
 
-	tok="$(tokenizers_asset "$target")"
-	echo "stage-native: $target tokenizers -> $native_dir/libtokenizers.a" >&2
-	curl -fsSL "https://github.com/daulet/tokenizers/releases/download/${TOKENIZERS_VERSION}/${tok}" | tar xz -C "$native_dir"
+	stage_tokenizers "$target" "$native_dir"
 
 	read -r ort_file ort_dir lib_name <<EOF
 $(ort_asset "$target")
 EOF
 	tmp="$(mktemp -d)"
 	echo "stage-native: $target onnxruntime -> $lib_dir/$lib_name" >&2
-	curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ort_file}" | tar xz -C "$tmp"
+	case "$ort_file" in
+	*.zip)
+		curl -fsSL -o "$tmp/ort.zip" "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ort_file}"
+		unzip -q "$tmp/ort.zip" -d "$tmp"
+		;;
+	*)
+		curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ort_file}" | tar xz -C "$tmp"
+		;;
+	esac
 	# The linux tarball ships libonnxruntime.so.<ver>; the resolver and dlopen
 	# want the bare name. Copy whichever exists to the bare name.
 	if [ -f "$tmp/$ort_dir/lib/$lib_name" ]; then

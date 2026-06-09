@@ -3,10 +3,10 @@
 #
 #   build-release.sh <os/arch>
 #
-# onnx-capable targets (linux/amd64, linux/arm64, darwin/arm64) build with
-# cgo + -tags onnx, linking the staged libtokenizers.a, and bundle the ONNX
-# Runtime shared library under lib/ in the archive. Other targets build the
-# pure-Go stub. Run scripts/stage-native.sh first for onnx targets.
+# onnx-capable targets (linux/amd64, linux/arm64, darwin/arm64, windows/amd64)
+# build with cgo + -tags onnx, linking the staged libtokenizers.a, and bundle
+# the ONNX Runtime shared library under lib/ in the archive. Other targets
+# build the pure-Go stub. Run scripts/stage-native.sh first for onnx targets.
 #
 # Output: dist/ogl_<version>_<os>_<arch>.{tar.gz,zip}  (version without leading v).
 set -eu
@@ -29,12 +29,20 @@ bin="ogl"
 [ "$OS" = windows ] && bin="ogl.exe"
 
 onnx_capable() {
-	case "$1" in linux/amd64 | linux/arm64 | darwin/arm64) return 0 ;; *) return 1 ;; esac
+	case "$1" in linux/amd64 | linux/arm64 | darwin/arm64 | windows/amd64) return 0 ;; *) return 1 ;; esac
 }
 
 echo "build-release: $TARGET version=$VERSION" >&2
 if onnx_capable "$TARGET"; then
-	[ "$TARGET" = linux/arm64 ] && export CC=aarch64-linux-gnu-gcc
+	case "$TARGET" in
+	linux/arm64) export CC=aarch64-linux-gnu-gcc ;;
+	windows/amd64)
+		export CC=x86_64-w64-mingw32-gcc
+		# Static MinGW runtime: without it the .exe needs libstdc++-6.dll,
+		# libgcc_s_seh-1.dll, and libwinpthread-1.dll at runtime.
+		LDFLAGS="$LDFLAGS -extldflags -static"
+		;;
+	esac
 	CGO_ENABLED=1 \
 		CGO_LDFLAGS="-L$ROOT/native/$OS-$ARCH" \
 		GOOS="$OS" GOARCH="$ARCH" \
@@ -42,6 +50,7 @@ if onnx_capable "$TARGET"; then
 	mkdir -p "$stage/lib"
 	case "$OS" in
 	darwin) lib=libonnxruntime.dylib ;;
+	windows) lib=onnxruntime.dll ;;
 	*) lib=libonnxruntime.so ;;
 	esac
 	cp "$ROOT/staging/$OS-$ARCH/lib/$lib" "$stage/lib/$lib"
