@@ -13,6 +13,14 @@ type File struct {
 	SHA256 string
 }
 
+func (m Model) TotalSize() int64 {
+	var n int64
+	for _, f := range m.Files {
+		n += f.Size
+	}
+	return n
+}
+
 var catalog = []Model{
 	{
 		Name:     "openai/privacy-filter",
