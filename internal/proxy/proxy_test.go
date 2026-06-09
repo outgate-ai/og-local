@@ -322,6 +322,44 @@ func TestProxyDebugLogsRouteAndResponse(t *testing.T) {
 	}
 }
 
+func TestProxyForwardsHostAndIdentityHeaders(t *testing.T) {
+	var gotHost, gotAuth, gotAccount, gotOriginator string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Host
+		gotAuth = r.Header.Get("Authorization")
+		gotAccount = r.Header.Get("chatgpt-account-id")
+		gotOriginator = r.Header.Get("originator")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+	upstreamHost := strings.TrimPrefix(upstream.URL, "http://")
+
+	m := testMinter(t)
+	h := New(Config{Minter: m, Redactor: &fakeRedactor{}, UpstreamBase: upstream.URL, Client: upstream.Client()})
+	rr := doRequest(t, h, "POST", keyPath(m.Mint(), "/backend-api/codex/responses"), `{}`,
+		map[string]string{
+			"Authorization":      "Bearer oauth-subscription-tok",
+			"chatgpt-account-id": "acct-123",
+			"originator":         "codex_exec",
+		})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("code = %d", rr.Code)
+	}
+	if gotHost != upstreamHost {
+		t.Errorf("upstream Host = %q, want %q (derived from UpstreamBase, not the inbound loopback host)", gotHost, upstreamHost)
+	}
+	if gotAuth != "Bearer oauth-subscription-tok" {
+		t.Errorf("Authorization not forwarded: %q", gotAuth)
+	}
+	if gotAccount != "acct-123" {
+		t.Errorf("chatgpt-account-id not forwarded: %q", gotAccount)
+	}
+	if gotOriginator != "codex_exec" {
+		t.Errorf("originator not forwarded: %q", gotOriginator)
+	}
+}
+
 func TestSplitKeyPath(t *testing.T) {
 	cases := []struct {
 		path      string

@@ -23,6 +23,10 @@ func copyHeaders(dst, src http.Header) {
 	}
 }
 
+// stripHopHeaders removes only the RFC 7230 hop-by-hop headers. It deliberately
+// leaves CDN/edge headers in place: this proxy listens on loopback with no edge
+// in front, so they never appear on inbound requests, and the upstream's own
+// edge sets its own.
 func stripHopHeaders(h http.Header) {
 	for _, k := range hopHeaders {
 		h.Del(k)
