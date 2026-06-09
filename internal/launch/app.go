@@ -78,7 +78,9 @@ func (a *App) Main(ctx context.Context, kind provider.Kind, args []string) (int,
 }
 
 func DefaultApp() *App {
-	logger := openDebugLog(os.Getenv("OGL_DEBUG"), os.Stderr)
+	// The log file stays open for the lifetime of the process; the OS reclaims
+	// the handle on exit, so the returned closer is intentionally not held.
+	logger, _ := openDebugLog(os.Getenv("OGL_DEBUG"), os.Stderr)
 	return &App{
 		NewDetector: defaultNewDetector,
 		NewMinter:   func() (*token.Minter, error) { return token.NewMinter(int32(os.Getpid()), realClock{}, tokenTTL) }, //nolint:gosec // pid fits int32 on supported platforms.
@@ -103,14 +105,19 @@ func debugLogPath(value string) (path string, enabled bool) {
 	}
 }
 
-// openDebugLog returns a debug logger writing to the OGL_DEBUG file, or nil when
-// disabled. It announces the chosen path on notice before the agent takes over
-// the terminal, so debug output never interleaves with the agent's TUI. A file
-// that cannot be opened falls back to a one-line notice and no logging.
-func openDebugLog(value string, notice io.Writer) *slog.Logger {
+type nopCloser struct{}
+
+func (nopCloser) Close() error { return nil }
+
+// openDebugLog returns a debug logger writing to the OGL_DEBUG file (or a nil
+// logger when disabled) together with a closer for the underlying file. It
+// announces the chosen path on notice before the agent takes over the terminal,
+// so debug output never interleaves with the agent's TUI. A file that cannot be
+// opened falls back to a one-line notice and no logging.
+func openDebugLog(value string, notice io.Writer) (*slog.Logger, io.Closer) {
 	path, enabled := debugLogPath(value)
 	if !enabled {
-		return nil
+		return nil, nopCloser{}
 	}
 	if dir := filepath.Dir(path); dir != "" {
 		_ = os.MkdirAll(dir, 0o750) //nolint:gosec // dir derives from the operator-supplied OGL_DEBUG path, not network input.
@@ -118,10 +125,10 @@ func openDebugLog(value string, notice io.Writer) *slog.Logger {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) //nolint:gosec // path is the operator-supplied OGL_DEBUG value, not network input.
 	if err != nil {
 		_, _ = fmt.Fprintf(notice, "ogl: could not open debug log %q: %v\n", path, err)
-		return nil
+		return nil, nopCloser{}
 	}
 	_, _ = fmt.Fprintf(notice, "ogl: debug log → %s\n", path)
-	return obs.Debug(f)
+	return obs.Debug(f), f
 }
 
 type realClock struct{}

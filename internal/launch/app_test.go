@@ -149,11 +149,16 @@ func TestDebugLogPathResolution(t *testing.T) {
 func TestOpenDebugLogWritesToFileAndAnnounces(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sub", "debug.log")
 	var notice bytes.Buffer
-	logger := openDebugLog(path, &notice)
+	logger, closer := openDebugLog(path, &notice)
 	if logger == nil {
 		t.Fatal("expected a logger for an explicit path")
 	}
 	logger.Debug("hello", "k", "v")
+	// Close before the t.TempDir cleanup runs; Windows refuses to remove a file
+	// that is still open.
+	if err := closer.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
 
 	if !strings.Contains(notice.String(), path) {
 		t.Errorf("startup notice should name the path: %q", notice.String())
@@ -168,8 +173,12 @@ func TestOpenDebugLogWritesToFileAndAnnounces(t *testing.T) {
 }
 
 func TestOpenDebugLogDisabled(t *testing.T) {
-	if openDebugLog("", &bytes.Buffer{}) != nil {
+	logger, closer := openDebugLog("", &bytes.Buffer{})
+	if logger != nil {
 		t.Error("empty value must yield no logger")
+	}
+	if err := closer.Close(); err != nil {
+		t.Errorf("disabled closer must be a safe no-op: %v", err)
 	}
 }
 
@@ -180,10 +189,11 @@ func TestOpenDebugLogUnwritablePathFallsBack(t *testing.T) {
 	if err := os.WriteFile(bad, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	logger := openDebugLog(filepath.Join(bad, "nested.log"), &notice)
+	logger, closer := openDebugLog(filepath.Join(bad, "nested.log"), &notice)
 	if logger != nil {
 		t.Error("unwritable path must fall back to no logger")
 	}
+	_ = closer.Close()
 	if !strings.Contains(notice.String(), "could not open debug log") {
 		t.Errorf("expected a fallback notice, got %q", notice.String())
 	}
