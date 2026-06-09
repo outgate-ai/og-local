@@ -74,7 +74,7 @@ func TestResolveUnsupportedKind(t *testing.T) {
 	if _, err := Resolve(provider.Passthrough, map[string]string{}, "http://x", "tok"); err == nil {
 		t.Error("expected error for unsupported kind")
 	}
-	if _, err := Resolve(provider.Ollama, map[string]string{}, "http://x", "tok"); err == nil {
-		t.Error("expected error for ollama (deferred)")
+	if _, err := Resolve(provider.OpenAIResponses, map[string]string{}, "http://x", "tok"); err == nil {
+		t.Error("expected error for a kind with no launcher subcommand")
 	}
 }

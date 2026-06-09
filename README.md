@@ -50,7 +50,6 @@ For each outbound request, `ogl` extracts the user-supplied content fields (`mes
 - OpenAI Chat Completions (`/v1/chat/completions`), streaming and non-streaming
 - OpenAI Responses (`/v1/responses`)
 - Anthropic Messages (`/v1/messages`), streaming and non-streaming, including tool use
-- Ollama (`/api/chat`), NDJSON streaming
 - AWS Bedrock and GCP Vertex: passthrough with SigV4 / ADC, redaction applied to the same provider-native shapes above
 
 ## Contributing

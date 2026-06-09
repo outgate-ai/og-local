@@ -426,3 +426,83 @@ func TestStreamFlushIsCalled(t *testing.T) {
 		t.Error("flush never called")
 	}
 }
+
+func responsesCodec(t *testing.T) provider.DeltaCodec {
+	t.Helper()
+	c := provider.Route("POST", "/v1/responses").DeltaCodec()
+	if c == nil {
+		t.Fatal("no responses codec")
+	}
+	return c
+}
+
+func responsesTextDelta(text string) string {
+	b, _ := json.Marshal(map[string]any{
+		"type":          "response.output_text.delta",
+		"item_id":       "msg_1",
+		"output_index":  0,
+		"content_index": 0,
+		"delta":         text,
+	})
+	return "event: response.output_text.delta\ndata: " + string(b) + "\n\n"
+}
+
+func collectResponsesText(t *testing.T, out string) string {
+	t.Helper()
+	var sb strings.Builder
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var env struct {
+			Type  string `json:"type"`
+			Delta string `json:"delta"`
+		}
+		if json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &env) != nil {
+			continue
+		}
+		if env.Type == "response.output_text.delta" {
+			sb.WriteString(env.Delta)
+		}
+	}
+	return sb.String()
+}
+
+func TestStreamResponsesSplitAcrossEvents(t *testing.T) {
+	m := mapping([2]string{"alice@example.com", "OG_PRIVATE_EMAIL_abc123"})
+	var buf bytes.Buffer
+	tr := New(&buf, responsesCodec(t), m)
+	feed(t, tr, []string{
+		"event: response.created\ndata: {\"type\":\"response.created\",\"response\":{}}\n\n",
+		responsesTextDelta("reply OG_PRIVATE_"),
+		responsesTextDelta("EMAIL_abc123 now"),
+		"event: response.output_text.done\ndata: {\"type\":\"response.output_text.done\",\"text\":\"x\"}\n\n",
+		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{}}\n\n",
+	})
+	out := buf.String()
+	if got := collectResponsesText(t, out); got != "reply alice@example.com now" {
+		t.Errorf("got %q", got)
+	}
+	if strings.Contains(out, "OG_PRIVATE_EMAIL") {
+		t.Errorf("placeholder leaked: %s", out)
+	}
+	// event: lines and terminal events pass through verbatim.
+	if !strings.Contains(out, "event: response.created") || !strings.Contains(out, "response.completed") {
+		t.Errorf("event/terminal lines not passed through: %s", out)
+	}
+}
+
+func TestStreamResponsesBlockStopResets(t *testing.T) {
+	m := mapping([2]string{"alice@example.com", "OG_PRIVATE_EMAIL_abc123"})
+	var buf bytes.Buffer
+	tr := New(&buf, responsesCodec(t), m)
+	feed(t, tr, []string{
+		responsesTextDelta("first OG_PRIVATE_EMAIL_abc123"),
+		"data: {\"type\":\"response.output_text.done\",\"text\":\"x\"}\n\n",
+		responsesTextDelta("second OG_PRIVATE_EMAIL_abc123"),
+		"data: {\"type\":\"response.completed\",\"response\":{}}\n\n",
+	})
+	if got := collectResponsesText(t, buf.String()); got != "first alice@example.comsecond alice@example.com" {
+		t.Errorf("got %q", got)
+	}
+}

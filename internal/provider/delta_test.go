@@ -135,3 +135,72 @@ func TestOpenAIChatDeltaMalformed(t *testing.T) {
 		}
 	}
 }
+
+func TestResponsesDeltaTextEvent(t *testing.T) {
+	codec := openAIResponsesDelta{}
+	payload := []byte(`{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":"hi OG_PRIVATE_EMAIL_abc123"}`)
+	ev, ok := codec.Event(payload)
+	if !ok || ev.Kind != EvDelta {
+		t.Fatalf("ok=%v kind=%v", ok, ev.Kind)
+	}
+	if ev.Text != "hi OG_PRIVATE_EMAIL_abc123" {
+		t.Fatalf("text = %q", ev.Text)
+	}
+	out := ev.Reencode("hi alice@example.com")
+	if !strings.Contains(string(out), "alice@example.com") || strings.Contains(string(out), "OG_PRIVATE_EMAIL") {
+		t.Errorf("reencode wrong: %s", out)
+	}
+	var env map[string]json.RawMessage
+	_ = json.Unmarshal(out, &env)
+	var itemID string
+	_ = json.Unmarshal(env["item_id"], &itemID)
+	if itemID != "msg_1" {
+		t.Errorf("item_id not preserved: %s", out)
+	}
+	var typ string
+	_ = json.Unmarshal(env["type"], &typ)
+	if typ != "response.output_text.delta" {
+		t.Errorf("type not preserved: %s", out)
+	}
+}
+
+func TestResponsesDeltaControlEvents(t *testing.T) {
+	codec := openAIResponsesDelta{}
+	cases := map[string]EventKind{
+		`{"type":"response.output_text.done","text":"full text"}`:       EvBlockStop,
+		`{"type":"response.completed","response":{}}`:                   EvDone,
+		`{"type":"response.created","response":{}}`:                     EvOther,
+		`{"type":"response.output_item.added","item":{}}`:               EvOther,
+		`{"type":"response.content_part.added","part":{}}`:              EvOther,
+		`{"type":"response.refusal.delta","delta":"no"}`:                EvOther,
+		`{"type":"response.function_call_arguments.delta","delta":"{"}`: EvOther,
+	}
+	for payload, want := range cases {
+		ev, ok := codec.Event([]byte(payload))
+		if !ok {
+			t.Errorf("%s: expected ok", payload)
+			continue
+		}
+		if ev.Kind != want {
+			t.Errorf("%s: kind = %v, want %v", payload, ev.Kind, want)
+		}
+		if ev.Kind != EvDelta && ev.Reencode != nil {
+			t.Errorf("%s: non-delta should not carry Reencode", payload)
+		}
+	}
+}
+
+func TestResponsesDeltaMalformed(t *testing.T) {
+	codec := openAIResponsesDelta{}
+	if _, ok := codec.Event([]byte(`not json`)); ok {
+		t.Error("expected !ok on non-JSON")
+	}
+	// output_text.delta whose delta is not a string -> EvOther.
+	if ev, ok := codec.Event([]byte(`{"type":"response.output_text.delta","delta":5}`)); !ok || ev.Kind != EvOther {
+		t.Errorf("non-string delta: ok=%v kind=%v", ok, ev.Kind)
+	}
+	// output_text.delta with no delta field -> EvOther.
+	if ev, ok := codec.Event([]byte(`{"type":"response.output_text.delta"}`)); !ok || ev.Kind != EvOther {
+		t.Errorf("missing delta: ok=%v kind=%v", ok, ev.Kind)
+	}
+}
