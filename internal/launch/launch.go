@@ -1,0 +1,96 @@
+package launch
+
+import (
+	"context"
+	"net"
+	"net/http"
+	"os"
+	"time"
+
+	"github.com/outgate-ai/og-local/internal/provider"
+)
+
+type Stdio struct {
+	In  *os.File
+	Out *os.File
+	Err *os.File
+}
+
+type Runner interface {
+	Run(ctx context.Context, argv, env []string, stdio Stdio) (int, error)
+}
+
+// HandlerFunc builds the proxy handler once the upstream is known. It is a seam
+// so the server can be wired without the launch package importing the detector
+// (and therefore cgo).
+type HandlerFunc func(kind provider.Kind, upstreamBase, upstreamKey string) http.Handler
+
+type Options struct {
+	Kind        provider.Kind
+	Args        []string
+	Env         map[string]string
+	LoopbackTok string
+	Handler     HandlerFunc
+	Runner      Runner
+	Listen      func() (net.Listener, error)
+	Stdio       Stdio
+}
+
+func Run(ctx context.Context, opts Options) (int, error) { //nolint:gocritic // single top-level entry; value Options reads clearly at the call site.
+	listen := opts.Listen
+	if listen == nil {
+		listen = defaultListen
+	}
+	ln, err := listen()
+	if err != nil {
+		return 1, err
+	}
+
+	res, err := Resolve(opts.Kind, opts.Env, loopbackURL(ln), opts.LoopbackTok)
+	if err != nil {
+		_ = ln.Close()
+		return 1, err
+	}
+
+	h := opts.Handler(opts.Kind, res.UpstreamBase, res.UpstreamKey)
+	srv := serve(ln, h)
+	defer shutdown(srv)
+
+	env := childEnviron(opts.Env, res.ChildEnv)
+	return opts.Runner.Run(ctx, opts.Args, env, opts.Stdio)
+}
+
+func defaultListen() (net.Listener, error) {
+	return net.Listen("tcp", "127.0.0.1:0")
+}
+
+func loopbackURL(l net.Listener) string {
+	return "http://" + l.Addr().String()
+}
+
+func serve(l net.Listener, h http.Handler) *http.Server {
+	srv := &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second}
+	go func() { _ = srv.Serve(l) }()
+	return srv
+}
+
+func shutdown(srv *http.Server) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = srv.Shutdown(ctx)
+}
+
+func childEnviron(base, overlay map[string]string) []string {
+	merged := make(map[string]string, len(base)+len(overlay))
+	for k, v := range base {
+		merged[k] = v
+	}
+	for k, v := range overlay {
+		merged[k] = v
+	}
+	out := make([]string, 0, len(merged))
+	for k, v := range merged {
+		out = append(out, k+"="+v)
+	}
+	return out
+}
