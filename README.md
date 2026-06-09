@@ -11,30 +11,65 @@ When your coding agent reads a file, the file gets shipped to a third-party LLM.
 
 **og-local** is a single binary that runs on your machine, intercepts the API calls your agent makes, detects PII and secrets in the prompt body before it leaves localhost, swaps them with opaque placeholders, forwards the redacted prompt upstream, and transparently restores the originals in the response. The agent never sees the difference. The upstream provider never sees the secrets.
 
-Detection runs in-process via the [`openai/privacy-filter`](https://huggingface.co/openai/privacy-filter) ONNX model. There's no cloud round-trip and no network call to anywhere except the upstream provider you were already calling. The model downloads once on first run; everything after that is local.
-
-## Status
-
-**v0.1 is under active development.** This branch ships the project skeleton: build, lint, test, coverage, CI. The proxy itself lands across milestones 1-7 ahead of v0.1.0. If you want to track progress, watch the repo or follow the release notes.
+Detection runs in-process via the [`openai/privacy-filter`](https://huggingface.co/openai/privacy-filter) ONNX model. There's no cloud round-trip and no network call to anywhere except the upstream provider you were already calling. The model is fetched once with `ogl model pull`; everything after that is local.
 
 ## Install
 
 ```sh
-go install github.com/outgate-ai/og-local/cmd/ogl@latest
+curl -fsSL https://raw.githubusercontent.com/outgate-ai/og-local/main/scripts/install.sh | sh
 ```
 
-Or grab a signed pre-built binary from [Releases](https://github.com/outgate-ai/og-local/releases) once v0.1.0 ships. Linux, macOS, and Windows are supported on amd64 and arm64 (no windows/arm64 yet, because ONNX Runtime upstream doesn't publish one).
+This installs the `ogl` binary and, on platforms that support redaction, places the bundled ONNX Runtime where `ogl` expects it. Then download the detection model once:
+
+```sh
+ogl model pull          # ~800MB into ~/.cache/og-local, resumable
+```
+
+That's it — `ogl claude "..."` and `ogl codex "..."` now redact.
+
+**Manual download.** Grab a signed archive from [Releases](https://github.com/outgate-ai/og-local/releases/latest):
+`ogl_<version>_<os>_<arch>.tar.gz` (or `.zip` on Windows). On a redaction-capable platform the archive contains `ogl` plus `lib/libonnxruntime.{so,dylib}`; copy that lib to `~/.cache/og-local/runtime/<os>-<arch>/`, or point `OGL_ONNXRUNTIME_LIB` at it.
+
+**`go install`.** `go install github.com/outgate-ai/og-local/cmd/ogl@latest` produces a **passthrough build only** — it cannot redact (no cgo, no bundled model runtime). Use the install script or a release archive for redaction.
+
+## Platform support
+
+| Platform | Redaction |
+|---|---|
+| linux / amd64 | ✅ full |
+| linux / arm64 | ✅ full |
+| macOS / arm64 (Apple Silicon) | ✅ full |
+| macOS / amd64 (Intel) | ⚠️ passthrough only |
+| Windows / amd64 | ⚠️ passthrough only |
+
+Redaction needs two upstream native libraries — [`daulet/tokenizers`](https://github.com/daulet/tokenizers) (no Windows build) and [ONNX Runtime](https://github.com/microsoft/onnxruntime) (no Intel-macOS build) — so the three targets above are the ones where both exist. On the passthrough platforms `ogl claude`/`ogl codex` exit with a clear "this build cannot redact" message rather than forwarding your prompt unprotected.
+
+> **macOS first run:** the binary and bundled library aren't notarized yet, so Gatekeeper may quarantine them. Clear it with `xattr -d com.apple.quarantine $(command -v ogl)` (and the lib under `~/.cache/og-local/runtime/`), or right-click → Open once.
+
+## Verify the download
+
+Releases ship `checksums.txt` and a keyless [cosign](https://github.com/sigstore/cosign) signature:
+
+```sh
+sha256sum -c checksums.txt          # or: shasum -a 256 -c checksums.txt
+
+cosign verify-blob \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github.com/outgate-ai/og-local/.github/workflows/release.yml@refs/tags/v.*$' \
+  --signature checksums.txt.sig \
+  checksums.txt
+```
 
 ## Quickstart
 
-> Coming in v0.1.0. The intended shape is:
-
 ```sh
+ogl model pull                      # one-time, ~800MB
+
 # Anthropic-flavored agent
 ogl claude "fix the failing test in cmd/server"
 
 # OpenAI-flavored agent
-ogl codex --model gpt-5.1 "review this PR"
+ogl codex "review this PR"
 ```
 
 `ogl` starts a local proxy on a random loopback port, points the child agent at it, and `exec`s the agent as a child process. Your full environment forwards to the child, and the agent keeps using whatever credentials it already has — `ogl` only redirects where the requests go. When the agent exits, `ogl` exits.
@@ -47,14 +82,22 @@ No daemon, no PID file, no global state.
 
 ## How it works (one paragraph)
 
-For each outbound request, `ogl` extracts the user-supplied content fields (`messages[].content`, `system`), runs the ONNX-based PII detector locally over each field independently, replaces detected spans with opaque placeholders (`OG_PRIVATE_EMAIL_<hex>`, `OG_SECRET_<hex>`, and the like), forwards the rewritten body upstream, and inverts the substitution on the response, including streaming responses where placeholders may split across SSE events. Request frame fields (`model`, `temperature`, tool schemas, ids) are passed through unchanged.
+For each outbound request, `ogl` extracts the user-supplied content fields (`messages[].content`, `system`), runs the ONNX-based PII detector locally over each field independently, replaces detected spans with opaque placeholders (`OG_PRIVATE_EMAIL_<hex>`, `OG_SECRET_<hex>`, and the like), forwards the rewritten body upstream, and inverts the substitution on the response, including streaming responses where placeholders may split across SSE events. Request frame fields (`model`, `temperature`, tool schemas, ids) are passed through unchanged. The placeholder↔value mapping lives only for the duration of a single request — there is no persistent vault.
 
-## Supported providers (planned for v0.1)
+## Supported providers
 
 - OpenAI Chat Completions (`/v1/chat/completions`), streaming and non-streaming
-- OpenAI Responses (`/v1/responses`)
+- OpenAI Responses (`/v1/responses`) and ChatGPT-subscription Codex (`/backend-api/codex/responses`)
 - Anthropic Messages (`/v1/messages`), streaming and non-streaming, including tool use
-- AWS Bedrock and GCP Vertex: passthrough with SigV4 / ADC, redaction applied to the same provider-native shapes above
+- Other paths pass through untouched
+
+## Environment variables
+
+| Variable | Purpose |
+|---|---|
+| `OGL_CACHE_DIR` | Override the model + runtime cache directory (default: `~/.cache/og-local`) |
+| `OGL_DEBUG` | `1` logs proxy activity to a file (no PII values); a path chooses the file. The path is printed at startup |
+| `OGL_ONNXRUNTIME_LIB` | Path to the ONNX Runtime shared library, overriding the default cache lookup |
 
 ## Contributing
 
