@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -64,11 +65,14 @@ func TestPrepareCodexHomeRealFS(t *testing.T) {
 	if !strings.Contains(string(cfg), `base_url = "http://127.0.0.1:5000/_k/ogl_live_tok/v1"`) {
 		t.Errorf("config base_url wrong:\n%s", cfg)
 	}
-	if fi, _ := os.Stat(filepath.Join(dir, "config.toml")); fi != nil && fi.Mode().Perm() != 0o600 {
-		t.Errorf("config perm = %v, want 0600", fi.Mode().Perm())
-	}
-	if fi, _ := os.Stat(dir); fi != nil && fi.Mode().Perm() != 0o700 {
-		t.Errorf("dir perm = %v, want 0700", fi.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		// Windows does not honor Unix permission bits; Stat reports 0666/0777.
+		if fi, _ := os.Stat(filepath.Join(dir, "config.toml")); fi != nil && fi.Mode().Perm() != 0o600 {
+			t.Errorf("config perm = %v, want 0600", fi.Mode().Perm())
+		}
+		if fi, _ := os.Stat(dir); fi != nil && fi.Mode().Perm() != 0o700 {
+			t.Errorf("dir perm = %v, want 0700", fi.Mode().Perm())
+		}
 	}
 
 	mirrored, err := os.ReadFile(filepath.Join(dir, "auth.json"))
