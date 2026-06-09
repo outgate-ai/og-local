@@ -142,3 +142,37 @@ func TestPrepareCodexHomeErrors(t *testing.T) {
 		t.Error("expected auth.json WriteFile error to surface")
 	}
 }
+
+func TestChooseCodexBackend(t *testing.T) {
+	apikeyJSON := []byte(`{"OPENAI_API_KEY":"sk-x","auth_mode":"apikey"}`)
+	chatgptJSON := []byte(`{"auth_mode":"chatgpt","tokens":{"access_token":"x"}}`)
+
+	cases := []struct {
+		name    string
+		env     map[string]string
+		auth    []byte
+		wantSub bool // true => chatgpt.com/backend-api/codex; false => api.openai.com/v1
+	}{
+		{"env key set beats everything", map[string]string{"OPENAI_API_KEY": "sk-env"}, chatgptJSON, false},
+		{"auth_mode apikey", map[string]string{}, apikeyJSON, false},
+		{"auth.json has api key field", map[string]string{}, []byte(`{"OPENAI_API_KEY":"sk-y"}`), false},
+		{"auth_mode chatgpt", map[string]string{}, chatgptJSON, true},
+		{"auth.json absent", map[string]string{}, nil, true},
+		{"auth.json unparseable", map[string]string{}, []byte(`{not json`), true},
+		{"auth_mode empty", map[string]string{}, []byte(`{"auth_mode":""}`), true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := chooseCodexBackend(c.env, c.auth)
+			if c.wantSub {
+				if got.UpstreamBase != chatGPTBase || got.ConfigPath != chatGPTPath {
+					t.Errorf("got %+v, want subscription (%s%s)", got, chatGPTBase, chatGPTPath)
+				}
+			} else {
+				if got.UpstreamBase != openAIAPIBase || got.ConfigPath != openAIAPIPath {
+					t.Errorf("got %+v, want api-key (%s%s)", got, openAIAPIBase, openAIAPIPath)
+				}
+			}
+		})
+	}
+}

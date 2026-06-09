@@ -1,11 +1,43 @@
 package launch
 
 import (
+	"encoding/json"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 )
+
+const (
+	openAIAPIBase = "https://api.openai.com"
+	openAIAPIPath = "/v1"
+	chatGPTBase   = "https://chatgpt.com"
+	chatGPTPath   = "/backend-api/codex"
+)
+
+type codexBackend struct {
+	UpstreamBase string
+	ConfigPath   string
+}
+
+func chooseCodexBackend(env map[string]string, authJSON []byte) codexBackend {
+	apiKey := codexBackend{UpstreamBase: openAIAPIBase, ConfigPath: openAIAPIPath}
+	subscription := codexBackend{UpstreamBase: chatGPTBase, ConfigPath: chatGPTPath}
+
+	if env["OPENAI_API_KEY"] != "" {
+		return apiKey
+	}
+	var auth struct {
+		AuthMode     string `json:"auth_mode"`
+		OpenAIAPIKey string `json:"OPENAI_API_KEY"`
+	}
+	if err := json.Unmarshal(authJSON, &auth); err == nil {
+		if auth.AuthMode == "apikey" || auth.OpenAIAPIKey != "" {
+			return apiKey
+		}
+	}
+	return subscription
+}
 
 type codexFS interface {
 	MkdirAll(path string, perm fs.FileMode) error
