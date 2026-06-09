@@ -34,7 +34,7 @@ jobs:
           go-version-file: go.mod
       - name: Install arm64 cross compiler
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+        run: sudo apt-get update && sudo apt-get install -y g++-aarch64-linux-gnu
       - name: Stage native libraries
         if: matrix.onnx_targets != ''
         run: ./scripts/stage-native.sh ${{ matrix.onnx_targets }}
