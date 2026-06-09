@@ -108,3 +108,78 @@ func TestProxyPipelineEndToEnd(t *testing.T) {
 		t.Errorf("response was not restored to the original secret: %s", out)
 	}
 }
+
+func TestResponsesPipelineEndToEnd(t *testing.T) {
+	const secret = "alice@example.com"
+
+	var upstreamSawBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		upstreamSawBody = string(b)
+
+		var placeholder string
+		if i := strings.Index(upstreamSawBody, "OG_PRIVATE_EMAIL_"); i >= 0 {
+			placeholder = upstreamSawBody[i : i+len("OG_PRIVATE_EMAIL_")+6]
+		}
+		half := len(placeholder) / 2
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl, _ := w.(http.Flusher)
+		ev := func(delta string) string {
+			return `event: response.output_text.delta` + "\n" +
+				`data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":"` + delta + `"}` + "\n\n"
+		}
+		_, _ = io.WriteString(w, ev("reply to "+placeholder[:half]))
+		if fl != nil {
+			fl.Flush()
+		}
+		_, _ = io.WriteString(w, ev(placeholder[half:]+" thanks"))
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{}}`+"\n\n")
+	}))
+	defer upstream.Close()
+
+	minter, err := token.NewMinter(4242, fixedClock{time.Unix(1_700_000_000, 0)}, time.Hour)
+	if err != nil {
+		t.Fatalf("minter: %v", err)
+	}
+	cache, err := memory.New[[]pii.Span](16)
+	if err != nil {
+		t.Fatalf("cache: %v", err)
+	}
+	pipeline := redact.New(scriptedDetector{value: secret, class: pii.ClassEmail}, cache)
+
+	h := proxy.New(proxy.Config{
+		Minter:       minter,
+		Redactor:     pipeline,
+		UpstreamBase: upstream.URL,
+		Client:       upstream.Client(),
+	})
+	front := httptest.NewServer(h)
+	defer front.Close()
+
+	reqBody := `{"model":"gpt-5.1","input":[{"role":"user","content":"email ` + secret + ` for me"}]}`
+	req, _ := http.NewRequest("POST", front.URL+"/_k/"+minter.Mint()+"/v1/responses", strings.NewReader(reqBody))
+	req.Header.Set("Authorization", "Bearer sk-agent-own-credential")
+
+	resp, err := front.Client().Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if strings.Contains(upstreamSawBody, secret) {
+		t.Errorf("upstream received the raw secret: %s", upstreamSawBody)
+	}
+	if !strings.Contains(upstreamSawBody, "OG_PRIVATE_EMAIL_") {
+		t.Errorf("upstream body was not redacted: %s", upstreamSawBody)
+	}
+
+	out := string(respBody)
+	if strings.Contains(out, "OG_PRIVATE_EMAIL_") {
+		t.Errorf("placeholder leaked to client: %s", out)
+	}
+	if !strings.Contains(out, secret) {
+		t.Errorf("response was not restored: %s", out)
+	}
+}

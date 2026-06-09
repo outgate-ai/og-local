@@ -27,7 +27,6 @@ func TestRoute(t *testing.T) {
 		{"POST", "/v1/chat/completions", OpenAIChat, true},
 		{"POST", "/v1/responses", OpenAIResponses, true},
 		{"POST", "https://api.openai.com/v1/responses", OpenAIResponses, true},
-		{"POST", "/api/chat", Passthrough, false},
 		{"POST", "/v1/messages/count_tokens", Passthrough, false},
 		{"GET", "/v1/models", Passthrough, false},
 		{"GET", "/v1/messages", Passthrough, false},

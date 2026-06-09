@@ -18,7 +18,6 @@ const (
 	Anthropic
 	OpenAIChat
 	OpenAIResponses
-	Ollama
 )
 
 type StreamFormat int
@@ -26,7 +25,6 @@ type StreamFormat int
 const (
 	StreamNone StreamFormat = iota
 	StreamSSE
-	StreamNDJSON
 )
 
 type FieldRef struct {
