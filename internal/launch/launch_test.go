@@ -89,7 +89,6 @@ func TestRunWiresServerAndChildEnv(t *testing.T) {
 	if !strings.HasPrefix(childBase, "http://127.0.0.1:") || !strings.Contains(childBase, "/_k/ogl_live_tok") {
 		t.Errorf("child base = %q, want loopback with /_k/<token>", childBase)
 	}
-	// The agent keeps its own key untouched; ogl does not swap it for the token.
 	if got := envValue(runner.env, "ANTHROPIC_API_KEY"); got != "sk-real" {
 		t.Errorf("child key = %q, want the agent's own key preserved", got)
 	}
@@ -126,7 +125,7 @@ func TestRunResolveErrorClosesListener(t *testing.T) {
 		ln = l
 		return l, err
 	}
-	// Unsupported provider kind → Resolve fails; the listener must be closed.
+	// Passthrough is unsupported by Resolve, which triggers the error path.
 	_, err := Run(context.Background(), Options{
 		Kind:        provider.Passthrough,
 		Args:        []string{"x"},

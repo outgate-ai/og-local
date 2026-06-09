@@ -72,7 +72,6 @@ func doRequest(t *testing.T, h *Handler, method, target, body string, headers ma
 func TestProxyRejectsMissingToken(t *testing.T) {
 	m := testMinter(t)
 	h := New(Config{Minter: m, Redactor: &fakeRedactor{}, UpstreamBase: "http://unused"})
-	// No /_k/ prefix at all.
 	rr := doRequest(t, h, "POST", "/v1/messages", `{}`, nil)
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("code = %d, want 401", rr.Code)
@@ -318,7 +317,6 @@ func TestProxyDebugLogsRouteAndResponse(t *testing.T) {
 			t.Errorf("debug log missing %q in:\n%s", want, out)
 		}
 	}
-	// The agent's request content must not appear in proxy debug output.
 	if strings.Contains(out, "alice@example.com") {
 		t.Errorf("proxy debug leaked request content: %s", out)
 	}

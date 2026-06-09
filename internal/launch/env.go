@@ -37,14 +37,10 @@ type Resolved struct {
 	ChildEnv     map[string]string
 }
 
-// Resolve decides the upstream the proxy should target and the environment
-// overlay the child agent needs, given the user's current environment. If the
-// user already set the provider's base-URL variable, that becomes the proxy's
-// own upstream (chaining); otherwise the provider default is used. The overlay
-// only repoints the agent's base-URL at the loopback proxy, embedding the
-// loopback token in the path as /_k/<token>; the agent's own credential
-// (env key, OAuth bearer, or login cache) is left untouched so it flows through
-// to the upstream. No provider key is required to launch.
+// Resolve returns the upstream base URL (a pre-set provider base-URL var, else
+// the provider default) and the child env overlay, which points only the
+// provider's base-URL var at loopbackURL + /_k/<token>. The agent's own
+// credentials are left untouched and no provider key is required.
 func Resolve(kind provider.Kind, env map[string]string, loopbackURL, loopbackToken string) (Resolved, error) {
 	pe, ok := envFor(kind)
 	if !ok {

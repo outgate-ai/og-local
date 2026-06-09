@@ -16,10 +16,8 @@ type Config struct {
 	LibPath   string
 }
 
-// New constructs the PII detector for the current build. In the default
-// pure-Go build it returns ErrUnavailable; in the onnx build it resolves the
-// cached model and shared library and returns a real detector together with a
-// close function.
+// New returns the PII detector and its close function; the pure-Go build
+// returns ErrUnavailable.
 func New(cfg Config) (pii.Detector, func() error, error) {
 	return newDetector(cfg)
 }

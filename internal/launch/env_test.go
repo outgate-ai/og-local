@@ -19,7 +19,6 @@ func TestResolveAnthropicDefaultUpstream(t *testing.T) {
 	if want := "http://127.0.0.1:5000/_k/ogl_live_tok"; r.ChildEnv["ANTHROPIC_BASE_URL"] != want {
 		t.Errorf("child base = %q, want %q", r.ChildEnv["ANTHROPIC_BASE_URL"], want)
 	}
-	// The agent's own key var must be left untouched so its credential flows to upstream.
 	if _, set := r.ChildEnv["ANTHROPIC_API_KEY"]; set {
 		t.Error("overlay must not touch ANTHROPIC_API_KEY; the agent keeps its own auth")
 	}
@@ -39,8 +38,6 @@ func TestResolveOpenAIDefaultUpstream(t *testing.T) {
 }
 
 func TestResolveNoKeyRequired(t *testing.T) {
-	// No API key in the environment must still resolve: the agent authenticates
-	// however it normally does (OAuth / login cache).
 	if _, err := Resolve(provider.Anthropic, map[string]string{}, "http://x", "tok"); err != nil {
 		t.Errorf("resolve must not require an API key, got %v", err)
 	}

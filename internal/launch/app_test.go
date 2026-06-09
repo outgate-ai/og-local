@@ -85,7 +85,6 @@ func TestAppMainMinterFails(t *testing.T) {
 }
 
 func TestAppMainLaunchesWithoutAPIKey(t *testing.T) {
-	// No API key set: ogl must still launch (the agent uses its own auth).
 	runner := &recordingRunner{exitCode: 0}
 	app := testApp(runner, []string{"PATH=/usr/bin"})
 	code, err := app.Main(context.Background(), provider.Anthropic, []string{"claude"})

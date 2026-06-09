@@ -6,12 +6,13 @@ import (
 	"testing"
 )
 
-func TestDiscardWritesNothing(t *testing.T) {
+func TestDiscardIsUsable(t *testing.T) {
 	l := Discard()
+	if l == nil {
+		t.Fatal("Discard returned nil")
+	}
 	l.Debug("should not appear", "k", "v")
 	l.Info("nor this")
-	// No panic, no output target to assert — the contract is simply that it is
-	// safe to call and produces no output. A nil-safe smoke test.
 }
 
 func TestDebugWritesAtDebugLevel(t *testing.T) {

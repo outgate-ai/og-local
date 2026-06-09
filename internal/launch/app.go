@@ -78,8 +78,6 @@ func (a *App) Main(ctx context.Context, kind provider.Kind, args []string) (int,
 }
 
 func DefaultApp() *App {
-	// The log file stays open for the lifetime of the process; the OS reclaims
-	// the handle on exit, so the returned closer is intentionally not held.
 	logger, _ := openDebugLog(os.Getenv("OGL_DEBUG"), os.Stderr)
 	return &App{
 		NewDetector: defaultNewDetector,
@@ -91,9 +89,8 @@ func DefaultApp() *App {
 	}
 }
 
-// debugLogPath resolves where OGL_DEBUG should write. An empty value disables
-// logging; "1"/"true"/"yes" select the default file under the cache root; any
-// other value is taken as an explicit file path.
+// debugLogPath maps the OGL_DEBUG value to a log path: empty disables;
+// "1"/"true"/"yes"/"on" select the default file; any other value is a path.
 func debugLogPath(value string) (path string, enabled bool) {
 	switch value {
 	case "":
@@ -109,11 +106,8 @@ type nopCloser struct{}
 
 func (nopCloser) Close() error { return nil }
 
-// openDebugLog returns a debug logger writing to the OGL_DEBUG file (or a nil
-// logger when disabled) together with a closer for the underlying file. It
-// announces the chosen path on notice before the agent takes over the terminal,
-// so debug output never interleaves with the agent's TUI. A file that cannot be
-// opened falls back to a one-line notice and no logging.
+// openDebugLog returns a debug logger writing to the OGL_DEBUG file and a closer
+// for it, or a nil logger when disabled. The chosen path is written to notice.
 func openDebugLog(value string, notice io.Writer) (*slog.Logger, io.Closer) {
 	path, enabled := debugLogPath(value)
 	if !enabled {

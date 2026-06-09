@@ -12,10 +12,8 @@ type verifier interface {
 	VerifySignature(tok string) (token.Claims, error)
 }
 
-// splitKeyPath pulls the loopback token out of a "/_k/<token>/rest" path,
-// returning the token and the remaining request path. The agent is handed a
-// base URL ending in /_k/<token>, so every request it makes carries the token
-// in the path while its own provider credential rides the headers untouched.
+// splitKeyPath splits a "/_k/<token>/rest" path into the token and the
+// remaining request path.
 func splitKeyPath(path string) (tok, rest string, ok bool) {
 	if !strings.HasPrefix(path, keyPathPrefix) {
 		return "", "", false

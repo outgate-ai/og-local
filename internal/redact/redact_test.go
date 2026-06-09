@@ -97,7 +97,6 @@ func TestRedactCacheHitOnRepeatedField(t *testing.T) {
 		text: {spanOf(text, "alice@example.com", pii.ClassEmail)},
 	}}
 	p := New(det, newCache(t))
-	// Same content in two messages → detector should run once for that text.
 	body := []byte(`{"model":"claude","messages":[{"role":"user","content":"repeated alice@example.com here"},{"role":"user","content":"repeated alice@example.com here"}]}`)
 	ep := provider.Route("POST", "/v1/messages")
 	if _, m, err := p.Redact(context.Background(), ep, body); err != nil {
@@ -195,11 +194,9 @@ func TestRedactDebugLogsNeverLeakPII(t *testing.T) {
 	if logged == "" {
 		t.Fatal("expected debug output")
 	}
-	// The whole point: the original PII must NEVER appear in the logs.
 	if strings.Contains(logged, secret) {
 		t.Errorf("debug log leaked the original PII value: %s", logged)
 	}
-	// Safe metadata SHOULD appear: the class and the opaque placeholder.
 	if !strings.Contains(logged, string(pii.ClassEmail)) {
 		t.Errorf("debug log missing span class: %s", logged)
 	}
@@ -241,7 +238,6 @@ func TestRedactDebugLogsOPFLatencyAndCacheSize(t *testing.T) {
 	if det.calls != 1 {
 		t.Fatalf("expected 1 OPF call, got %d", det.calls)
 	}
-	// The OPF (detector) latency must be logged with the elapsed time.
 	if !strings.Contains(out, "cached=false") || !strings.Contains(out, "dur=42ms") {
 		t.Errorf("missing OPF latency line: %s", out)
 	}
@@ -252,7 +248,7 @@ func TestRedactDebugLogsOPFLatencyAndCacheSize(t *testing.T) {
 
 func TestRedactDebugCacheHitLogsNoInference(t *testing.T) {
 	a := "from alice@example.com"
-	b := "from alice@example.com" // identical -> second field is a cache hit
+	b := "from alice@example.com"
 	clk := fakeclock.New(time.Unix(1_700_000_000, 0))
 	det := &clockDetector{
 		clk:   clk,
