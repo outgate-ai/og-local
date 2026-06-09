@@ -23,15 +23,16 @@ type Runner interface {
 type HandlerFunc func(upstreamBase string) http.Handler
 
 type Options struct {
-	Kind         provider.Kind
-	Args         []string
-	Env          map[string]string
-	LoopbackTok  string
-	Handler      HandlerFunc
-	Runner       Runner
-	Listen       func() (net.Listener, error)
-	Stdio        Stdio
-	PrepareChild func(loopbackURL, token string) (map[string]string, error)
+	Kind             provider.Kind
+	Args             []string
+	Env              map[string]string
+	LoopbackTok      string
+	Handler          HandlerFunc
+	Runner           Runner
+	Listen           func() (net.Listener, error)
+	Stdio            Stdio
+	PrepareChild     func(loopbackURL, token string) (map[string]string, error)
+	UpstreamOverride string
 }
 
 func Run(ctx context.Context, opts Options) (int, error) { //nolint:gocritic // single top-level entry; value Options reads clearly at the call site.
@@ -50,7 +51,12 @@ func Run(ctx context.Context, opts Options) (int, error) { //nolint:gocritic // 
 		return 1, err
 	}
 
-	h := opts.Handler(res.UpstreamBase)
+	upstream := res.UpstreamBase
+	if opts.UpstreamOverride != "" {
+		upstream = opts.UpstreamOverride
+	}
+
+	h := opts.Handler(upstream)
 	srv := serve(ln, h)
 	defer shutdown(srv)
 

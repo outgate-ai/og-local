@@ -191,8 +191,8 @@ func TestResponsesPipelineEndToEnd(t *testing.T) {
 
 func TestCodexConfigResolvesToRedactingRoute(t *testing.T) {
 	home := t.TempDir()
-	hook := launch.CodexPrepare(home)
-	env, err := hook("http://127.0.0.1:5000", "ogl_live_tok")
+	cl := launch.CodexLaunchFor(home, nil) // no auth.json, no env → subscription default
+	env, err := cl.PrepareChild("http://127.0.0.1:5000", "ogl_live_tok")
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestCodexConfigResolvesToRedactingRoute(t *testing.T) {
 	// Codex (wire_api=responses) appends "/responses" to base_url. Verify the
 	// resulting request, after the proxy strips the /_k/<token> prefix, hits the
 	// redacting /v1/responses route.
-	full := base + "/responses" // e.g. http://127.0.0.1:5000/_k/ogl_live_tok/v1/responses
+	full := base + "/responses" // subscription default: …/_k/ogl_live_tok/backend-api/codex/responses
 	u, err := url.Parse(full)
 	if err != nil {
 		t.Fatalf("parse %q: %v", full, err)

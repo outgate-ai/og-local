@@ -26,13 +26,14 @@ const (
 )
 
 type App struct {
-	NewDetector  func() (pii.Detector, func() error, error)
-	NewMinter    func() (*token.Minter, error)
-	Environ      func() []string
-	Runner       Runner
-	Stdio        Stdio
-	Logger       *slog.Logger
-	PrepareChild func(loopbackURL, token string) (map[string]string, error)
+	NewDetector      func() (pii.Detector, func() error, error)
+	NewMinter        func() (*token.Minter, error)
+	Environ          func() []string
+	Runner           Runner
+	Stdio            Stdio
+	Logger           *slog.Logger
+	PrepareChild     func(loopbackURL, token string) (map[string]string, error)
+	UpstreamOverride string
 }
 
 func (a *App) Main(ctx context.Context, kind provider.Kind, args []string) (int, error) {
@@ -68,14 +69,15 @@ func (a *App) Main(ctx context.Context, kind provider.Kind, args []string) (int,
 	}
 
 	return Run(ctx, Options{
-		Kind:         kind,
-		Args:         args,
-		Env:          mapEnviron(a.Environ()),
-		LoopbackTok:  loopbackTok,
-		Handler:      handler,
-		Runner:       a.Runner,
-		Stdio:        a.Stdio,
-		PrepareChild: a.PrepareChild,
+		Kind:             kind,
+		Args:             args,
+		Env:              mapEnviron(a.Environ()),
+		LoopbackTok:      loopbackTok,
+		Handler:          handler,
+		Runner:           a.Runner,
+		Stdio:            a.Stdio,
+		PrepareChild:     a.PrepareChild,
+		UpstreamOverride: a.UpstreamOverride,
 	})
 }
 

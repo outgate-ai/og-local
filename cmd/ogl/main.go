@@ -58,7 +58,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "ogl: %v\n", err)
 			os.Exit(1)
 		}
-		os.Exit(runAgent(provider.OpenAIChat, "codex", args[1:], launch.CodexPrepare(home)))
+		cl := launch.CodexLaunchFor(home, map[string]string{"OPENAI_API_KEY": os.Getenv("OPENAI_API_KEY")})
+		os.Exit(runAgent(provider.OpenAIChat, "codex", args[1:], func(a *launch.App) {
+			a.PrepareChild = cl.PrepareChild
+			a.UpstreamOverride = cl.UpstreamBase
+		}))
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", args[0])
 		printUsage(os.Stderr)
@@ -66,10 +70,12 @@ func main() {
 	}
 }
 
-func runAgent(kind provider.Kind, command string, args []string, prepare func(loopbackURL, token string) (map[string]string, error)) int {
+func runAgent(kind provider.Kind, command string, args []string, configure func(*launch.App)) int {
 	argv := append([]string{command}, args...)
 	app := launch.DefaultApp()
-	app.PrepareChild = prepare
+	if configure != nil {
+		configure(app)
+	}
 	code, err := app.Main(context.Background(), kind, argv)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ogl: %v\n", err)

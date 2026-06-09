@@ -289,12 +289,57 @@ func TestRunPrepareChildErrorFailsLaunch(t *testing.T) {
 
 func TestNewCodexPrepareWiresPrepareCodexHome(t *testing.T) {
 	home := t.TempDir()
-	prep := newCodexPrepare(osCodexFS{}, home)
+	prep := newCodexPrepare(osCodexFS{}, home, "/v1")
 	env, err := prep("http://127.0.0.1:5000", "tok")
 	if err != nil {
 		t.Fatalf("prep: %v", err)
 	}
 	if env["CODEX_HOME"] != codexHomeDir(home) {
 		t.Errorf("CODEX_HOME = %q", env["CODEX_HOME"])
+	}
+}
+
+func TestRunUpstreamOverrideBeatsResolve(t *testing.T) {
+	var gotUpstream string
+	handler := func(upstreamBase string) http.Handler {
+		gotUpstream = upstreamBase
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	}
+	_, err := Run(context.Background(), Options{
+		Kind:             provider.OpenAIChat,
+		Args:             []string{"codex"},
+		Env:              map[string]string{"OPENAI_API_KEY": "sk"},
+		LoopbackTok:      "tok",
+		Handler:          handler,
+		Runner:           &recordingRunner{},
+		UpstreamOverride: "https://chatgpt.com",
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if gotUpstream != "https://chatgpt.com" {
+		t.Errorf("handler upstream = %q, want the override https://chatgpt.com", gotUpstream)
+	}
+}
+
+func TestRunNoOverrideUsesResolveDefault(t *testing.T) {
+	var gotUpstream string
+	handler := func(upstreamBase string) http.Handler {
+		gotUpstream = upstreamBase
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	}
+	_, err := Run(context.Background(), Options{
+		Kind:        provider.Anthropic,
+		Args:        []string{"claude"},
+		Env:         map[string]string{"ANTHROPIC_API_KEY": "sk"},
+		LoopbackTok: "tok",
+		Handler:     handler,
+		Runner:      &recordingRunner{},
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if gotUpstream != "https://api.anthropic.com" {
+		t.Errorf("handler upstream = %q, want the Resolve default (claude unchanged)", gotUpstream)
 	}
 }

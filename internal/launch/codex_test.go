@@ -49,7 +49,7 @@ func TestPrepareCodexHomeRealFS(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env, err := prepareCodexHome(osCodexFS{}, home, "http://127.0.0.1:5000", "ogl_live_tok")
+	env, err := prepareCodexHome(osCodexFS{}, home, "http://127.0.0.1:5000", "ogl_live_tok", "/v1")
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestPrepareCodexHomeRealFS(t *testing.T) {
 
 func TestPrepareCodexHomeNoAuthFile(t *testing.T) {
 	home := t.TempDir() // no ~/.codex/auth.json present
-	env, err := prepareCodexHome(osCodexFS{}, home, "http://127.0.0.1:6000", "tok")
+	env, err := prepareCodexHome(osCodexFS{}, home, "http://127.0.0.1:6000", "tok", "/v1")
 	if err != nil {
 		t.Fatalf("prepare must not fail when auth.json is absent: %v", err)
 	}
@@ -131,14 +131,14 @@ type fakeErr struct{}
 func (*fakeErr) Error() string { return "fake fs error" }
 
 func TestPrepareCodexHomeErrors(t *testing.T) {
-	if _, err := prepareCodexHome(&failCodexFS{failMkdir: true}, "/home", "http://x", "t"); err == nil {
+	if _, err := prepareCodexHome(&failCodexFS{failMkdir: true}, "/home", "http://x", "t", "/v1"); err == nil {
 		t.Error("expected MkdirAll error")
 	}
-	if _, err := prepareCodexHome(&failCodexFS{failWrite: 1, authErr: errFake}, "/home", "http://x", "t"); err == nil {
+	if _, err := prepareCodexHome(&failCodexFS{failWrite: 1, authErr: errFake}, "/home", "http://x", "t", "/v1"); err == nil {
 		t.Error("expected config WriteFile error")
 	}
 	// auth.json present (ReadFile ok) but its WriteFile (the 2nd write) fails.
-	if _, err := prepareCodexHome(&failCodexFS{failWrite: 2, auth: []byte("{}")}, "/home", "http://x", "t"); err == nil {
+	if _, err := prepareCodexHome(&failCodexFS{failWrite: 2, auth: []byte("{}")}, "/home", "http://x", "t", "/v1"); err == nil {
 		t.Error("expected auth.json WriteFile error to surface")
 	}
 }
@@ -172,6 +172,40 @@ func TestChooseCodexBackend(t *testing.T) {
 				if got.UpstreamBase != openAIAPIBase || got.ConfigPath != openAIAPIPath {
 					t.Errorf("got %+v, want api-key (%s%s)", got, openAIAPIBase, openAIAPIPath)
 				}
+			}
+		})
+	}
+}
+
+func TestNewCodexLaunchMatchesAuthMode(t *testing.T) {
+	cases := []struct {
+		name         string
+		env          map[string]string
+		auth         []byte
+		wantUpstream string
+		wantBaseEnds string
+	}{
+		{"subscription", nil, []byte(`{"auth_mode":"chatgpt"}`), chatGPTBase, "/_k/tok" + chatGPTPath},
+		{"api key env", map[string]string{"OPENAI_API_KEY": "sk"}, nil, openAIAPIBase, "/_k/tok" + openAIAPIPath},
+		{"api key auth.json", nil, []byte(`{"auth_mode":"apikey"}`), openAIAPIBase, "/_k/tok" + openAIAPIPath},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			home := t.TempDir()
+			cl := newCodexLaunch(osCodexFS{}, home, c.env, c.auth)
+			if cl.UpstreamBase != c.wantUpstream {
+				t.Errorf("UpstreamBase = %q, want %q", cl.UpstreamBase, c.wantUpstream)
+			}
+			env, err := cl.PrepareChild("http://127.0.0.1:5000", "tok")
+			if err != nil {
+				t.Fatalf("prepare: %v", err)
+			}
+			cfg, err := os.ReadFile(filepath.Join(env["CODEX_HOME"], "config.toml"))
+			if err != nil {
+				t.Fatalf("read config: %v", err)
+			}
+			if !strings.Contains(string(cfg), `base_url = "http://127.0.0.1:5000`+c.wantBaseEnds+`"`) {
+				t.Errorf("config base_url should carry the per-mode path %q, got:\n%s", c.wantBaseEnds, cfg)
 			}
 		})
 	}

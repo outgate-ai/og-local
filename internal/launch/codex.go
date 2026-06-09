@@ -63,12 +63,12 @@ func codexHomeDir(userHome string) string {
 	return filepath.Join(userHome, ".codex", "ogl")
 }
 
-func prepareCodexHome(fsys codexFS, userHome, loopbackURL, token string) (map[string]string, error) {
+func prepareCodexHome(fsys codexFS, userHome, loopbackURL, token, configPath string) (map[string]string, error) {
 	dir := codexHomeDir(userHome)
 	if err := fsys.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	base := strings.TrimRight(loopbackURL, "/") + "/_k/" + token + "/v1"
+	base := strings.TrimRight(loopbackURL, "/") + "/_k/" + token + configPath
 	if err := fsys.WriteFile(filepath.Join(dir, "config.toml"), []byte(renderCodexConfig(base)), 0o600); err != nil {
 		return nil, err
 	}
@@ -81,16 +81,35 @@ func prepareCodexHome(fsys codexFS, userHome, loopbackURL, token string) (map[st
 	return map[string]string{"CODEX_HOME": dir}, nil
 }
 
-func newCodexPrepare(fsys codexFS, userHome string) func(loopbackURL, token string) (map[string]string, error) {
+func newCodexPrepare(fsys codexFS, userHome, configPath string) func(loopbackURL, token string) (map[string]string, error) {
 	return func(loopbackURL, token string) (map[string]string, error) {
-		return prepareCodexHome(fsys, userHome, loopbackURL, token)
+		return prepareCodexHome(fsys, userHome, loopbackURL, token, configPath)
 	}
 }
 
-// CodexPrepare returns a PrepareChild hook that writes the synthetic Codex home
-// under userHome and yields the CODEX_HOME overlay.
-func CodexPrepare(userHome string) func(loopbackURL, token string) (map[string]string, error) {
-	return newCodexPrepare(osCodexFS{}, userHome)
+// CodexLaunch carries the codex-specific launch overrides: the upstream the
+// proxy forwards to, and the PrepareChild hook that writes the synthetic Codex
+// home pointing at that upstream's path.
+type CodexLaunch struct {
+	UpstreamBase string
+	PrepareChild func(loopbackURL, token string) (map[string]string, error)
+}
+
+func newCodexLaunch(fsys codexFS, userHome string, env map[string]string, authJSON []byte) CodexLaunch {
+	backend := chooseCodexBackend(env, authJSON)
+	return CodexLaunch{
+		UpstreamBase: backend.UpstreamBase,
+		PrepareChild: newCodexPrepare(fsys, userHome, backend.ConfigPath),
+	}
+}
+
+// CodexLaunchFor reads the user's Codex auth mode under userHome and returns the
+// matching upstream + PrepareChild hook: a ChatGPT-subscription login forwards
+// to the backend the OAuth token can call; an API key forwards to the public API.
+func CodexLaunchFor(userHome string, env map[string]string) CodexLaunch {
+	fsys := osCodexFS{}
+	authJSON, _ := fsys.ReadFile(filepath.Join(userHome, ".codex", "auth.json"))
+	return newCodexLaunch(fsys, userHome, env, authJSON)
 }
 
 func renderCodexConfig(baseURL string) string {

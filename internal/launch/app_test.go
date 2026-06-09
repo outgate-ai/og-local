@@ -240,10 +240,10 @@ func TestDefaultAppHasNilPrepareChild(t *testing.T) {
 	}
 }
 
-func TestCodexPrepareProducesWorkingHook(t *testing.T) {
+func TestCodexLaunchForProducesWorkingHook(t *testing.T) {
 	home := t.TempDir()
-	hook := CodexPrepare(home)
-	env, err := hook("http://127.0.0.1:5000", "tok")
+	cl := CodexLaunchFor(home, nil)
+	env, err := cl.PrepareChild("http://127.0.0.1:5000", "tok")
 	if err != nil {
 		t.Fatalf("hook: %v", err)
 	}
