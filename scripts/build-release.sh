@@ -38,9 +38,10 @@ if onnx_capable "$TARGET"; then
 	linux/arm64) export CC=aarch64-linux-gnu-gcc ;;
 	windows/amd64)
 		export CC=x86_64-w64-mingw32-gcc
-		# Static MinGW runtime: without it the .exe needs libstdc++-6.dll,
-		# libgcc_s_seh-1.dll, and libwinpthread-1.dll at runtime.
-		LDFLAGS="$LDFLAGS -extldflags -static"
+		# Static MinGW runtime (no libstdc++/libgcc/winpthread DLLs at runtime),
+		# plus ntdll for the NT syscalls Rust std makes from libtokenizers.a —
+		# extldflags land after -ltokenizers, where ld can resolve them.
+		LDFLAGS="$LDFLAGS -extldflags \"-static -lntdll\""
 		;;
 	esac
 	CGO_ENABLED=1 \
