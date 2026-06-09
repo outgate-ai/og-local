@@ -1,5 +1,54 @@
 package launch
 
+import (
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+type codexFS interface {
+	MkdirAll(path string, perm fs.FileMode) error
+	WriteFile(path string, data []byte, perm fs.FileMode) error
+	ReadFile(path string) ([]byte, error)
+}
+
+type osCodexFS struct{}
+
+func (osCodexFS) MkdirAll(path string, perm fs.FileMode) error {
+	return os.MkdirAll(path, perm) //nolint:gosec // a directory under the user's home, not network input.
+}
+
+func (osCodexFS) WriteFile(path string, data []byte, perm fs.FileMode) error {
+	return os.WriteFile(path, data, perm) //nolint:gosec // a file under the user's home, not network input.
+}
+
+func (osCodexFS) ReadFile(path string) ([]byte, error) {
+	return os.ReadFile(path) //nolint:gosec // the user's own codex auth file under their home.
+}
+
+func codexHomeDir(userHome string) string {
+	return filepath.Join(userHome, ".codex", "ogl")
+}
+
+func prepareCodexHome(fsys codexFS, userHome, loopbackURL, token string) (map[string]string, error) {
+	dir := codexHomeDir(userHome)
+	if err := fsys.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	base := strings.TrimRight(loopbackURL, "/") + "/_k/" + token + "/v1"
+	if err := fsys.WriteFile(filepath.Join(dir, "config.toml"), []byte(renderCodexConfig(base)), 0o600); err != nil {
+		return nil, err
+	}
+	src := filepath.Join(userHome, ".codex", "auth.json")
+	if data, err := fsys.ReadFile(src); err == nil {
+		if werr := fsys.WriteFile(filepath.Join(dir, "auth.json"), data, 0o600); werr != nil {
+			return nil, werr
+		}
+	}
+	return map[string]string{"CODEX_HOME": dir}, nil
+}
+
 func renderCodexConfig(baseURL string) string {
 	return `profile = "ogl"
 
