@@ -51,9 +51,14 @@ func main() {
 	case "model":
 		os.Exit(runModel(args[1:]))
 	case "claude":
-		os.Exit(runAgent(provider.Anthropic, "claude", args[1:]))
+		os.Exit(runAgent(provider.Anthropic, "claude", args[1:], nil))
 	case "codex":
-		os.Exit(runAgent(provider.OpenAIChat, "codex", args[1:]))
+		home, err := os.UserHomeDir()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ogl: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(runAgent(provider.OpenAIChat, "codex", args[1:], launch.CodexPrepare(home)))
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", args[0])
 		printUsage(os.Stderr)
@@ -61,9 +66,11 @@ func main() {
 	}
 }
 
-func runAgent(kind provider.Kind, command string, args []string) int {
+func runAgent(kind provider.Kind, command string, args []string, prepare func(loopbackURL, token string) (map[string]string, error)) int {
 	argv := append([]string{command}, args...)
-	code, err := launch.DefaultApp().Main(context.Background(), kind, argv)
+	app := launch.DefaultApp()
+	app.PrepareChild = prepare
+	code, err := app.Main(context.Background(), kind, argv)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ogl: %v\n", err)
 		return 1

@@ -207,3 +207,47 @@ func TestDefaultNewDetectorUnavailableInPureGoBuild(t *testing.T) {
 		t.Errorf("on error, detector/close must be nil: det=%v closeNil=%v", det, closeFn == nil)
 	}
 }
+
+func TestAppMainPrepareChildThreadsCodexHome(t *testing.T) {
+	runner := &recordingRunner{exitCode: 0}
+	app := testApp(runner, []string{"OPENAI_API_KEY=sk-real"})
+	app.PrepareChild = func(string, string) (map[string]string, error) {
+		return map[string]string{"CODEX_HOME": "/tmp/ogl-home"}, nil
+	}
+	if _, err := app.Main(context.Background(), provider.OpenAIChat, []string{"codex"}); err != nil {
+		t.Fatalf("main: %v", err)
+	}
+	if got := envValue(runner.env, "CODEX_HOME"); got != "/tmp/ogl-home" {
+		t.Errorf("CODEX_HOME = %q, want /tmp/ogl-home", got)
+	}
+}
+
+func TestAppMainNilPrepareChildNoCodexHome(t *testing.T) {
+	runner := &recordingRunner{exitCode: 0}
+	app := testApp(runner, []string{"ANTHROPIC_API_KEY=sk"})
+	// PrepareChild left nil (the claude path).
+	if _, err := app.Main(context.Background(), provider.Anthropic, []string{"claude"}); err != nil {
+		t.Fatalf("main: %v", err)
+	}
+	if got := envValue(runner.env, "CODEX_HOME"); got != "" {
+		t.Errorf("claude must not set CODEX_HOME, got %q", got)
+	}
+}
+
+func TestDefaultAppHasNilPrepareChild(t *testing.T) {
+	if DefaultApp().PrepareChild != nil {
+		t.Error("DefaultApp must leave PrepareChild nil; the cmd layer wires it for codex")
+	}
+}
+
+func TestCodexPrepareProducesWorkingHook(t *testing.T) {
+	home := t.TempDir()
+	hook := CodexPrepare(home)
+	env, err := hook("http://127.0.0.1:5000", "tok")
+	if err != nil {
+		t.Fatalf("hook: %v", err)
+	}
+	if env["CODEX_HOME"] != codexHomeDir(home) {
+		t.Errorf("CODEX_HOME = %q", env["CODEX_HOME"])
+	}
+}

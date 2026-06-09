@@ -55,6 +55,12 @@ func newCodexPrepare(fsys codexFS, userHome string) func(loopbackURL, token stri
 	}
 }
 
+// CodexPrepare returns a PrepareChild hook that writes the synthetic Codex home
+// under userHome and yields the CODEX_HOME overlay.
+func CodexPrepare(userHome string) func(loopbackURL, token string) (map[string]string, error) {
+	return newCodexPrepare(osCodexFS{}, userHome)
+}
+
 func renderCodexConfig(baseURL string) string {
 	return `profile = "ogl"
 
