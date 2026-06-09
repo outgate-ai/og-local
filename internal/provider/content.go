@@ -2,7 +2,13 @@ package provider
 
 import "encoding/json"
 
+var textTypeOnly = map[string]bool{"text": true}
+
 func extractContentField(raw json.RawMessage) ([]FieldRef, func() json.RawMessage, error) {
+	return extractContentFieldTypes(raw, textTypeOnly)
+}
+
+func extractContentFieldTypes(raw json.RawMessage, textTypes map[string]bool) ([]FieldRef, func() json.RawMessage, error) {
 	if len(raw) == 0 {
 		return nil, nil, nil
 	}
@@ -37,7 +43,7 @@ func extractContentField(raw json.RawMessage) ([]FieldRef, func() json.RawMessag
 			if t, ok := block["type"]; ok {
 				_ = json.Unmarshal(t, &typ)
 			}
-			if typ != "text" {
+			if !textTypes[typ] {
 				rebuilds[idx] = func() json.RawMessage { return blocks[idx] }
 				continue
 			}
