@@ -103,7 +103,7 @@ func TestPullRuntimeLinuxVersionedSoWithBareSymlink(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pull: %v", err)
 	}
-	got := readAll(t, p.fsys, "cache/runtime/linux-amd64/libonnxruntime.so")
+	got := readAll(t, p.fsys, filepath.Join("cache", "runtime", "linux-amd64", "libonnxruntime.so"))
 	if got != "SO-BYTES" {
 		t.Errorf("lib content = %q", got)
 	}
@@ -121,7 +121,7 @@ func TestPullRuntimeDarwinBareDylib(t *testing.T) {
 	if err := p.pull(context.Background(), nil); err != nil {
 		t.Fatalf("pull: %v", err)
 	}
-	if got := readAll(t, p.fsys, "cache/runtime/darwin-arm64/libonnxruntime.dylib"); got != "DYLIB-BYTES" {
+	if got := readAll(t, p.fsys, filepath.Join("cache", "runtime", "darwin-arm64", "libonnxruntime.dylib")); got != "DYLIB-BYTES" {
 		t.Errorf("lib content = %q", got)
 	}
 }
@@ -135,7 +135,7 @@ func TestPullRuntimeWindowsZip(t *testing.T) {
 	if err := p.pull(context.Background(), nil); err != nil {
 		t.Fatalf("pull: %v", err)
 	}
-	if got := readAll(t, p.fsys, "cache/runtime/windows-amd64/onnxruntime.dll"); got != "DLL-BYTES" {
+	if got := readAll(t, p.fsys, filepath.Join("cache", "runtime", "windows-amd64", "onnxruntime.dll")); got != "DLL-BYTES" {
 		t.Errorf("lib content = %q", got)
 	}
 }
@@ -152,10 +152,10 @@ func TestPullRuntimeIdempotent(t *testing.T) {
 		goos:    "linux",
 		goarch:  "amd64",
 	}
-	if err := p.fsys.MkdirAll("cache/runtime/linux-amd64"); err != nil {
+	if err := p.fsys.MkdirAll(filepath.Join("cache", "runtime", "linux-amd64")); err != nil {
 		t.Fatal(err)
 	}
-	w, err := p.fsys.Create("cache/runtime/linux-amd64/libonnxruntime.so")
+	w, err := p.fsys.Create(filepath.Join("cache", "runtime", "linux-amd64", "libonnxruntime.so"))
 	if err != nil {
 		t.Fatal(err)
 	}
