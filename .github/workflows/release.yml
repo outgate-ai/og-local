@@ -19,8 +19,8 @@ jobs:
       matrix:
         include:
           - runner: ubuntu-latest
-            onnx_targets: "linux/amd64 linux/arm64"
-            stub_targets: "darwin/amd64 windows/amd64"
+            onnx_targets: "linux/amd64 linux/arm64 windows/amd64"
+            stub_targets: "darwin/amd64"
           - runner: macos-latest
             onnx_targets: "darwin/arm64"
             stub_targets: ""
@@ -32,9 +32,15 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - name: Install arm64 cross compiler
+      - name: Install cross compilers
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y g++-aarch64-linux-gnu
+        run: sudo apt-get update && sudo apt-get install -y g++-aarch64-linux-gnu gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
+      - name: Cache windows tokenizers staticlib
+        if: runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: native/windows-amd64/libtokenizers.a
+          key: tokenizers-${{ env.TOKENIZERS_VERSION }}-x86_64-pc-windows-gnu
       - name: Stage native libraries
         if: matrix.onnx_targets != ''
         run: ./scripts/stage-native.sh ${{ matrix.onnx_targets }}
