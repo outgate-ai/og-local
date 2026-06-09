@@ -506,3 +506,33 @@ func TestStreamResponsesBlockStopResets(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+// Regression: the ChatGPT backend emits terminal events (output_text.done,
+// content_part.done, output_item.done) that embed the FULL assistant message.
+// The agent reads its final answer from those, so placeholders there must be
+// restored too — not only in the incremental output_text.delta events.
+func TestStreamResponsesTerminalEventsRestored(t *testing.T) {
+	codec := provider.Route("POST", "/backend-api/codex/responses").DeltaCodec()
+	mapping := pii.Mapping{{From: "Ada Lovelace", To: "OG_PRIVATE_PERSON_793c19"}}
+
+	var in bytes.Buffer
+	// Stream the value across deltas, then the terminal events carrying full text.
+	in.WriteString(`data: {"type":"response.output_text.delta","delta":"hi OG_PRIVATE_PERSON_793c19"}` + "\n")
+	in.WriteString(`data: {"type":"response.output_text.done","text":"hi OG_PRIVATE_PERSON_793c19"}` + "\n")
+	in.WriteString(`data: {"type":"response.content_part.done","part":{"type":"output_text","text":"hi OG_PRIVATE_PERSON_793c19"}}` + "\n")
+	in.WriteString(`data: {"type":"response.output_item.done","item":{"content":[{"type":"output_text","text":"hi OG_PRIVATE_PERSON_793c19"}]}}` + "\n")
+	in.WriteString(`data: {"type":"response.completed","response":{}}` + "\n")
+
+	var out bytes.Buffer
+	tr := New(&out, codec, mapping)
+	_, _ = tr.Write(in.Bytes())
+	_ = tr.Close()
+
+	got := out.String()
+	if strings.Contains(got, "OG_PRIVATE_PERSON_793c19") {
+		t.Errorf("placeholder leaked through a terminal event:\n%s", got)
+	}
+	if c := strings.Count(got, "Ada Lovelace"); c != 4 {
+		t.Errorf("expected the original in all 4 events (1 delta + 3 terminal), got %d:\n%s", c, got)
+	}
+}

@@ -3,6 +3,8 @@ package proxy
 import (
 	"net/http"
 	"strings"
+
+	"github.com/outgate-ai/og-local/internal/provider"
 )
 
 var hopHeaders = []string{
@@ -31,6 +33,20 @@ func stripHopHeaders(h http.Header) {
 
 func isEventStream(h http.Header) bool {
 	return strings.HasPrefix(h.Get("Content-Type"), "text/event-stream")
+}
+
+func isJSON(h http.Header) bool {
+	return strings.HasPrefix(h.Get("Content-Type"), "application/json")
+}
+
+// shouldStream reports whether to run the split-safe SSE restorer: an explicit
+// event-stream, or a streamable route whose body is not declared JSON (some
+// upstreams stream with no Content-Type).
+func shouldStream(ep provider.Endpoint, h http.Header) bool {
+	if isEventStream(h) {
+		return true
+	}
+	return ep.StreamsSSE() && !isJSON(h)
 }
 
 func flusherOf(w http.ResponseWriter) func() {

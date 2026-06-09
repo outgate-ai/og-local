@@ -12,7 +12,8 @@ func Route(method, path string) Endpoint {
 		return Endpoint{Kind: Anthropic, Stream: StreamSSE, extract: anthropicExtract, delta: anthropicDelta{}}
 	case strings.HasSuffix(path, "/v1/chat/completions"):
 		return Endpoint{Kind: OpenAIChat, Stream: StreamSSE, extract: openAIChatExtract, delta: openAIChatDelta{}}
-	case strings.HasSuffix(path, "/v1/responses"):
+	case strings.HasSuffix(path, "/v1/responses"),
+		strings.HasSuffix(path, "/backend-api/codex/responses"):
 		return Endpoint{Kind: OpenAIResponses, Stream: StreamSSE, extract: openAIResponsesExtract, delta: openAIResponsesDelta{}}
 	default:
 		return Endpoint{Kind: Passthrough}

@@ -45,6 +45,8 @@ type Endpoint struct {
 
 func (e Endpoint) Redactable() bool { return e.extract != nil }
 
+func (e Endpoint) StreamsSSE() bool { return e.Stream == StreamSSE }
+
 func (e Endpoint) DeltaCodec() DeltaCodec { return e.delta }
 
 type DeltaCodec interface {
