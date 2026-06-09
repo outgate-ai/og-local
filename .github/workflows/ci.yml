@@ -134,13 +134,16 @@ jobs:
         with:
           go-version-file: go.mod
       - run: shellcheck scripts/*.sh
-      - name: Build a release archive end to end
+      - name: Build release archives end to end
         run: |
-          sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
-          ./scripts/stage-native.sh linux/amd64
+          sudo apt-get update && sudo apt-get install -y g++-aarch64-linux-gnu
+          ./scripts/stage-native.sh linux/amd64 linux/arm64
           ./scripts/build-release.sh linux/amd64
+          ./scripts/build-release.sh linux/arm64
           ./scripts/build-release.sh windows/amd64
-          tar -tzf dist/ogl_*_linux_amd64.tar.gz | grep -q '^./lib/libonnxruntime.so$'
+          for arch in amd64 arm64; do
+            tar -tzf dist/ogl_*_linux_${arch}.tar.gz | grep -q '^./lib/libonnxruntime.so$'
+          done
           unzip -l dist/ogl_*_windows_amd64.zip | grep -q 'ogl.exe'
 
   commit-lint:
