@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -150,6 +152,8 @@ func TestConfirmFrom(t *testing.T) {
 		{"n\n", false},
 		{"no\n", false},
 		{"x\n", false},
+		{"y", true},
+		{"n", false},
 		{"", false},
 	}
 	for _, c := range cases {
@@ -206,6 +210,46 @@ func TestDefaultAppWiresDownloadSeams(t *testing.T) {
 	app := DefaultApp()
 	if app.Confirm == nil || app.PullModel == nil || app.PullRuntime == nil {
 		t.Error("DefaultApp must wire Confirm/PullModel/PullRuntime")
+	}
+}
+
+func TestDefaultAppPullSeamsRunOffline(t *testing.T) {
+	// Stage a cache where everything is already present (sparse files at the
+	// exact catalog sizes), so the real pull closures complete without network.
+	cache := t.TempDir()
+	t.Setenv("OGL_CACHE_DIR", cache)
+	m := models.Default()
+	dir := models.ModelDir(cache, m)
+	for _, f := range m.Files {
+		p := filepath.Join(dir, f.Path)
+		if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		fh, err := os.Create(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := fh.Truncate(f.Size); err != nil {
+			t.Fatal(err)
+		}
+		if err := fh.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rt := filepath.Join(cache, "runtime", runtime.GOOS+"-"+runtime.GOARCH)
+	if err := os.MkdirAll(rt, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rt, models.SharedLibName()), []byte("lib"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	app := DefaultApp()
+	if err := app.PullModel(context.Background()); err != nil {
+		t.Fatalf("PullModel: %v", err)
+	}
+	if err := app.PullRuntime(context.Background()); err != nil {
+		t.Fatalf("PullRuntime: %v", err)
 	}
 }
 
