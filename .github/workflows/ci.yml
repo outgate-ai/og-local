@@ -134,10 +134,15 @@ jobs:
         with:
           go-version-file: go.mod
       - run: shellcheck scripts/*.sh
+      - name: Cache windows tokenizers staticlib
+        uses: actions/cache@v4
+        with:
+          path: native/windows-amd64/libtokenizers.a
+          key: tokenizers-${{ env.TOKENIZERS_VERSION }}-x86_64-pc-windows-gnu
       - name: Build release archives end to end
         run: |
-          sudo apt-get update && sudo apt-get install -y g++-aarch64-linux-gnu
-          ./scripts/stage-native.sh linux/amd64 linux/arm64
+          sudo apt-get update && sudo apt-get install -y g++-aarch64-linux-gnu gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
+          ./scripts/stage-native.sh linux/amd64 linux/arm64 windows/amd64
           ./scripts/build-release.sh linux/amd64
           ./scripts/build-release.sh linux/arm64
           ./scripts/build-release.sh windows/amd64
@@ -145,6 +150,26 @@ jobs:
             tar -tzf dist/ogl_*_linux_${arch}.tar.gz | grep -q '^./lib/libonnxruntime.so$'
           done
           unzip -l dist/ogl_*_windows_amd64.zip | grep -q 'ogl.exe'
+          unzip -l dist/ogl_*_windows_amd64.zip | grep -q 'lib/onnxruntime.dll'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-onnx-zip
+          path: dist/ogl_*_windows_amd64.zip
+          retention-days: 1
+
+  windows-smoke:
+    needs: release-scripts
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-onnx-zip
+      - name: Run the windows binary
+        shell: pwsh
+        run: |
+          Expand-Archive -Path (Get-Item ogl_*_windows_amd64.zip) -DestinationPath extracted
+          ./extracted/ogl.exe version
+          ./extracted/ogl.exe model list
 
   commit-lint:
     runs-on: ubuntu-latest
