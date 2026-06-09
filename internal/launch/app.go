@@ -2,11 +2,15 @@ package launch
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
+	"github.com/outgate-ai/og-local/internal/models"
 	"github.com/outgate-ai/og-local/internal/obs"
 	"github.com/outgate-ai/og-local/internal/pii"
 	"github.com/outgate-ai/og-local/internal/provider"
@@ -74,10 +78,7 @@ func (a *App) Main(ctx context.Context, kind provider.Kind, args []string) (int,
 }
 
 func DefaultApp() *App {
-	var logger *slog.Logger
-	if os.Getenv("OGL_DEBUG") != "" {
-		logger = obs.Debug(os.Stderr)
-	}
+	logger := openDebugLog(os.Getenv("OGL_DEBUG"), os.Stderr)
 	return &App{
 		NewDetector: defaultNewDetector,
 		NewMinter:   func() (*token.Minter, error) { return token.NewMinter(int32(os.Getpid()), realClock{}, tokenTTL) }, //nolint:gosec // pid fits int32 on supported platforms.
@@ -86,6 +87,41 @@ func DefaultApp() *App {
 		Stdio:       Stdio{In: os.Stdin, Out: os.Stdout, Err: os.Stderr},
 		Logger:      logger,
 	}
+}
+
+// debugLogPath resolves where OGL_DEBUG should write. An empty value disables
+// logging; "1"/"true"/"yes" select the default file under the cache root; any
+// other value is taken as an explicit file path.
+func debugLogPath(value string) (path string, enabled bool) {
+	switch value {
+	case "":
+		return "", false
+	case "1", "true", "yes", "on":
+		return filepath.Join(models.CacheRoot(), "debug.log"), true
+	default:
+		return value, true
+	}
+}
+
+// openDebugLog returns a debug logger writing to the OGL_DEBUG file, or nil when
+// disabled. It announces the chosen path on notice before the agent takes over
+// the terminal, so debug output never interleaves with the agent's TUI. A file
+// that cannot be opened falls back to a one-line notice and no logging.
+func openDebugLog(value string, notice io.Writer) *slog.Logger {
+	path, enabled := debugLogPath(value)
+	if !enabled {
+		return nil
+	}
+	if dir := filepath.Dir(path); dir != "" {
+		_ = os.MkdirAll(dir, 0o750) //nolint:gosec // dir derives from the operator-supplied OGL_DEBUG path, not network input.
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) //nolint:gosec // path is the operator-supplied OGL_DEBUG value, not network input.
+	if err != nil {
+		_, _ = fmt.Fprintf(notice, "ogl: could not open debug log %q: %v\n", path, err)
+		return nil
+	}
+	_, _ = fmt.Fprintf(notice, "ogl: debug log → %s\n", path)
+	return obs.Debug(f)
 }
 
 type realClock struct{}

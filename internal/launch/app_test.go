@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -125,14 +127,65 @@ func TestAppMainWithDebugLogger(t *testing.T) {
 	}
 }
 
-func TestDefaultAppReadsOGLDebug(t *testing.T) {
-	t.Setenv("OGL_DEBUG", "1")
-	if DefaultApp().Logger == nil {
-		t.Error("OGL_DEBUG set: expected a logger")
+func TestDebugLogPathResolution(t *testing.T) {
+	if _, on := debugLogPath(""); on {
+		t.Error("empty OGL_DEBUG must disable logging")
 	}
-	t.Setenv("OGL_DEBUG", "")
-	if DefaultApp().Logger != nil {
-		t.Error("OGL_DEBUG unset: expected nil logger (discard)")
+	for _, v := range []string{"1", "true", "yes", "on"} {
+		p, on := debugLogPath(v)
+		if !on {
+			t.Errorf("%q must enable logging", v)
+		}
+		if filepath.Base(p) != "debug.log" {
+			t.Errorf("%q -> %q, want default debug.log under cache root", v, p)
+		}
+	}
+	p, on := debugLogPath("/custom/where.log")
+	if !on || p != "/custom/where.log" {
+		t.Errorf("custom path = (%q,%v), want (/custom/where.log,true)", p, on)
+	}
+}
+
+func TestOpenDebugLogWritesToFileAndAnnounces(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sub", "debug.log")
+	var notice bytes.Buffer
+	logger := openDebugLog(path, &notice)
+	if logger == nil {
+		t.Fatal("expected a logger for an explicit path")
+	}
+	logger.Debug("hello", "k", "v")
+
+	if !strings.Contains(notice.String(), path) {
+		t.Errorf("startup notice should name the path: %q", notice.String())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	if !strings.Contains(string(data), "hello") {
+		t.Errorf("debug record not written to file: %q", data)
+	}
+}
+
+func TestOpenDebugLogDisabled(t *testing.T) {
+	if openDebugLog("", &bytes.Buffer{}) != nil {
+		t.Error("empty value must yield no logger")
+	}
+}
+
+func TestOpenDebugLogUnwritablePathFallsBack(t *testing.T) {
+	var notice bytes.Buffer
+	// A path whose parent is a file, not a directory, cannot be created.
+	bad := filepath.Join(t.TempDir(), "afile")
+	if err := os.WriteFile(bad, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	logger := openDebugLog(filepath.Join(bad, "nested.log"), &notice)
+	if logger != nil {
+		t.Error("unwritable path must fall back to no logger")
+	}
+	if !strings.Contains(notice.String(), "could not open debug log") {
+		t.Errorf("expected a fallback notice, got %q", notice.String())
 	}
 }
 
