@@ -3,6 +3,8 @@ package proxy
 import (
 	"net/http"
 	"strings"
+
+	"github.com/outgate-ai/og-local/internal/provider"
 )
 
 var hopHeaders = []string{
@@ -35,6 +37,21 @@ func stripHopHeaders(h http.Header) {
 
 func isEventStream(h http.Header) bool {
 	return strings.HasPrefix(h.Get("Content-Type"), "text/event-stream")
+}
+
+func isJSON(h http.Header) bool {
+	return strings.HasPrefix(h.Get("Content-Type"), "application/json")
+}
+
+// shouldStream decides whether to run the split-safe SSE restorer. An explicit
+// text/event-stream always streams. Otherwise a route that can stream is treated
+// as SSE unless the upstream explicitly declared a JSON (non-streaming) body —
+// the ChatGPT backend streams responses with no Content-Type at all.
+func shouldStream(ep provider.Endpoint, h http.Header) bool {
+	if isEventStream(h) {
+		return true
+	}
+	return ep.StreamsSSE() && !isJSON(h)
 }
 
 func flusherOf(w http.ResponseWriter) func() {

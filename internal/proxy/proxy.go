@@ -102,10 +102,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	streaming := shouldStream(ep, resp.Header)
 	mode := "passthrough"
 	switch {
 	case len(mapping) == 0:
-	case isEventStream(resp.Header):
+	case streaming:
 		mode = "stream-restore"
 	default:
 		mode = "buffered-restore"
@@ -113,7 +114,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.log.Debug("upstream response", "status", resp.StatusCode,
 		"content_type", resp.Header.Get("Content-Type"), "mode", mode, "restorable", len(mapping))
 
-	h.writeResponse(w, ep, resp, mapping)
+	h.writeResponse(w, ep, resp, mapping, streaming)
 }
 
 func (h *Handler) upstreamRequest(r *http.Request, path string, body []byte) (*http.Request, error) {
@@ -134,7 +135,7 @@ func (h *Handler) upstreamRequest(r *http.Request, path string, body []byte) (*h
 	return upReq, nil
 }
 
-func (h *Handler) writeResponse(w http.ResponseWriter, ep provider.Endpoint, resp *http.Response, mapping pii.Mapping) {
+func (h *Handler) writeResponse(w http.ResponseWriter, ep provider.Endpoint, resp *http.Response, mapping pii.Mapping, streaming bool) {
 	copyHeaders(w.Header(), resp.Header)
 	w.Header().Del("Content-Length")
 
@@ -144,7 +145,7 @@ func (h *Handler) writeResponse(w http.ResponseWriter, ep provider.Endpoint, res
 		return
 	}
 
-	if isEventStream(resp.Header) {
+	if streaming {
 		w.WriteHeader(resp.StatusCode)
 		flush := flusherOf(w)
 		tr := stream.New(w, ep.DeltaCodec(), mapping, stream.WithFlush(flush))

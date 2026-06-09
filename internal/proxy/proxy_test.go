@@ -322,6 +322,47 @@ func TestProxyDebugLogsRouteAndResponse(t *testing.T) {
 	}
 }
 
+func TestProxyStreamsWhenUpstreamOmitsContentType(t *testing.T) {
+	// The ChatGPT backend returns an SSE stream with NO Content-Type header.
+	// The route is known-streaming, so the split-safe restorer must engage even
+	// though the header sniff fails — otherwise placeholders split across events
+	// leak to the client unrestored.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Deliberately set no Content-Type.
+		fl, _ := w.(http.Flusher)
+		ev := func(delta string) string {
+			return "event: response.output_text.delta\n" +
+				`data: {"type":"response.output_text.delta","item_id":"m1","output_index":0,"content_index":0,"delta":"` + delta + `"}` + "\n\n"
+		}
+		// Split the placeholder across two events.
+		_, _ = io.WriteString(w, ev("hello OG_PRIVATE_"))
+		if fl != nil {
+			fl.Flush()
+		}
+		_, _ = io.WriteString(w, ev("EMAIL_abc123 bye"))
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{}}`+"\n\n")
+	}))
+	defer upstream.Close()
+
+	m := testMinter(t)
+	h := New(Config{
+		Minter:       m,
+		Redactor:     &fakeRedactor{pairs: []pii.Pair{{From: "alice@example.com", To: "OG_PRIVATE_EMAIL_abc123"}}},
+		UpstreamBase: upstream.URL,
+		Client:       upstream.Client(),
+	})
+	rr := doRequest(t, h, "POST", keyPath(m.Mint(), "/backend-api/codex/responses"),
+		`{"model":"gpt-5.5","input":[{"role":"user","content":"mail alice@example.com"}]}`, nil)
+
+	out := rr.Body.String()
+	if strings.Contains(out, "OG_PRIVATE_EMAIL") {
+		t.Errorf("placeholder leaked to client (buffered path used on a no-Content-Type SSE stream): %s", out)
+	}
+	if !strings.Contains(out, "alice@example.com") {
+		t.Errorf("split placeholder was not restored: %s", out)
+	}
+}
+
 func TestProxyForwardsHostAndIdentityHeaders(t *testing.T) {
 	var gotHost, gotAuth, gotAccount, gotOriginator string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -357,6 +398,36 @@ func TestProxyForwardsHostAndIdentityHeaders(t *testing.T) {
 	}
 	if gotOriginator != "codex_exec" {
 		t.Errorf("originator not forwarded: %q", gotOriginator)
+	}
+}
+
+func TestShouldStream(t *testing.T) {
+	sse := provider.Route("POST", "/v1/responses") // StreamsSSE() == true
+	pass := provider.Route("GET", "/v1/models")    // StreamsSSE() == false
+	hdr := func(ct string) http.Header {
+		h := http.Header{}
+		if ct != "" {
+			h.Set("Content-Type", ct)
+		}
+		return h
+	}
+	cases := []struct {
+		name string
+		ep   provider.Endpoint
+		ct   string
+		want bool
+	}{
+		{"explicit event-stream on streamable", sse, "text/event-stream", true},
+		{"explicit event-stream on passthrough", pass, "text/event-stream", true},
+		{"json on streamable stays buffered", sse, "application/json", false},
+		{"empty CT on streamable streams (ChatGPT backend)", sse, "", true},
+		{"empty CT on passthrough does not stream", pass, "", false},
+		{"json on passthrough does not stream", pass, "application/json", false},
+	}
+	for _, c := range cases {
+		if got := shouldStream(c.ep, hdr(c.ct)); got != c.want {
+			t.Errorf("%s: shouldStream(ct=%q) = %v, want %v", c.name, c.ct, got, c.want)
+		}
 	}
 }
 
