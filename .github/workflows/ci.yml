@@ -77,6 +77,36 @@ jobs:
           flags: integration
           fail_ci_if_error: true
 
+  detector-build:
+    runs-on: ubuntu-latest
+    env:
+      TOKENIZERS_VERSION: v1.27.0
+      ORT_VERSION: 1.26.0
+      NATIVE_DIR: ${{ github.workspace }}/.onnxlibs
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Fetch native libraries
+        run: |
+          mkdir -p "$NATIVE_DIR"
+          curl -sL "https://github.com/daulet/tokenizers/releases/download/${TOKENIZERS_VERSION}/libtokenizers.linux-amd64.tar.gz" | tar xz -C "$NATIVE_DIR"
+          curl -sL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz" | tar xz -C "$NATIVE_DIR"
+      - name: Build onnx-tagged packages
+        env:
+          CGO_ENABLED: "1"
+          CGO_LDFLAGS: -L${{ github.workspace }}/.onnxlibs
+        run: go build -tags onnx ./...
+      - name: Lint onnx-tagged packages
+        env:
+          CGO_ENABLED: "1"
+          CGO_LDFLAGS: -L${{ github.workspace }}/.onnxlibs
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v2.12.2
+          "$(go env GOPATH)/bin/golangci-lint" run --build-tags onnx ./internal/pii/onnx/...
+
   build:
     runs-on: ${{ matrix.os }}
     strategy:
