@@ -108,14 +108,18 @@ func TestVerifySignatureRejectsForgedAndExpired(t *testing.T) {
 		t.Errorf("no prefix: err = %v, want ErrMalformed", err)
 	}
 
+	// Flip the first byte of the signed body (well inside payload+tag, not the
+	// slack low bits of the final base32 char) so the change always survives
+	// decode and breaks the HMAC.
 	b := []byte(tok)
-	if b[len(b)-1] == 'A' {
-		b[len(b)-1] = 'B'
+	i := len(prefix)
+	if b[i] == 'A' {
+		b[i] = 'B'
 	} else {
-		b[len(b)-1] = 'A'
+		b[i] = 'A'
 	}
-	if _, err := m.VerifySignature(string(b)); err == nil {
-		t.Error("tampered token: expected error, got nil")
+	if _, err := m.VerifySignature(string(b)); !errors.Is(err, ErrBadSignature) {
+		t.Errorf("tampered token: err = %v, want ErrBadSignature", err)
 	}
 
 	clk.Advance(2 * time.Hour)
