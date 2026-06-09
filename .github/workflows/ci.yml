@@ -121,17 +121,27 @@ jobs:
           cache: true
       - run: make build
 
-  goreleaser-check:
+  release-scripts:
     runs-on: ubuntu-latest
+    env:
+      TOKENIZERS_VERSION: v1.27.0
+      ORT_VERSION: 1.26.0
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - uses: goreleaser/goreleaser-action@v7
-        with:
-          version: latest
-          args: check
+      - run: shellcheck scripts/*.sh
+      - name: Build a release archive end to end
+        run: |
+          sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+          ./scripts/stage-native.sh linux/amd64
+          ./scripts/build-release.sh linux/amd64
+          ./scripts/build-release.sh windows/amd64
+          tar -tzf dist/ogl_*_linux_amd64.tar.gz | grep -q '^./lib/libonnxruntime.so$'
+          unzip -l dist/ogl_*_windows_amd64.zip | grep -q 'ogl.exe'
 
   commit-lint:
     runs-on: ubuntu-latest

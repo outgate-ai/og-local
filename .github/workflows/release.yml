@@ -7,11 +7,24 @@ on:
 permissions:
   contents: write
   id-token: write
-  packages: write
+
+env:
+  TOKENIZERS_VERSION: v1.27.0
+  ORT_VERSION: 1.26.0
 
 jobs:
-  goreleaser:
-    runs-on: ubuntu-latest
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            onnx_targets: "linux/amd64 linux/arm64"
+            stub_targets: "darwin/amd64 windows/amd64"
+          - runner: macos-latest
+            onnx_targets: "darwin/arm64"
+            stub_targets: ""
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -19,11 +32,48 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - uses: sigstore/cosign-installer@v3
-      - uses: anchore/sbom-action/download-syft@v0
-      - uses: goreleaser/goreleaser-action@v7
+      - name: Install arm64 cross compiler
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+      - name: Stage native libraries
+        if: matrix.onnx_targets != ''
+        run: ./scripts/stage-native.sh ${{ matrix.onnx_targets }}
+      - name: Build archives
+        run: |
+          for t in ${{ matrix.onnx_targets }} ${{ matrix.stub_targets }}; do
+            ./scripts/build-release.sh "$t"
+          done
+      - uses: actions/upload-artifact@v4
         with:
-          version: latest
-          args: release --clean
+          name: dist-${{ strategy.job-index }}
+          path: dist/ogl_*
+          retention-days: 1
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: sigstore/cosign-installer@v3
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum ogl_* > checksums.txt
+          cat checksums.txt
+      - name: Sign checksums
+        run: cosign sign-blob --yes --output-signature dist/checksums.txt.sig dist/checksums.txt
+      - name: Create release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            dist/ogl_* dist/checksums.txt dist/checksums.txt.sig

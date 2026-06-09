@@ -24,3 +24,7 @@ Thumbs.db
 
 # Local-only native libs for the onnx build tag (cgo)
 /.onnxlibs/
+
+# Release staging (fetched static libs + dynamic libs to bundle)
+/native/
+/staging/
