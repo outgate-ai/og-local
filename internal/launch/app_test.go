@@ -3,6 +3,7 @@ package launch
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,11 +41,11 @@ func TestAppMainHappyPath(t *testing.T) {
 	if runner.argv[0] != "claude" || runner.argv[1] != "hello" {
 		t.Errorf("argv = %v", runner.argv)
 	}
-	if got := envValue(runner.env, "ANTHROPIC_BASE_URL"); got == "" {
-		t.Error("child base URL not set")
+	if got := envValue(runner.env, "ANTHROPIC_BASE_URL"); !strings.Contains(got, "/_k/") {
+		t.Errorf("child base URL = %q, want loopback with /_k/ token path", got)
 	}
-	if got := envValue(runner.env, "ANTHROPIC_API_KEY"); got == "sk-real" {
-		t.Error("child still has the real key; should be the loopback token")
+	if got := envValue(runner.env, "ANTHROPIC_API_KEY"); got != "sk-real" {
+		t.Errorf("child key = %q, want the agent's own key preserved (not swapped)", got)
 	}
 }
 
@@ -79,10 +80,19 @@ func TestAppMainMinterFails(t *testing.T) {
 	}
 }
 
-func TestAppMainMissingKey(t *testing.T) {
-	app := testApp(&recordingRunner{}, []string{"PATH=/usr/bin"})
-	if _, err := app.Main(context.Background(), provider.Anthropic, []string{"claude"}); err == nil {
-		t.Error("expected missing-key error from Resolve")
+func TestAppMainLaunchesWithoutAPIKey(t *testing.T) {
+	// No API key set: ogl must still launch (the agent uses its own auth).
+	runner := &recordingRunner{exitCode: 0}
+	app := testApp(runner, []string{"PATH=/usr/bin"})
+	code, err := app.Main(context.Background(), provider.Anthropic, []string{"claude"})
+	if err != nil {
+		t.Fatalf("must launch without an API key, got %v", err)
+	}
+	if code != 0 {
+		t.Errorf("code = %d", code)
+	}
+	if got := envValue(runner.env, "ANTHROPIC_BASE_URL"); !strings.Contains(got, "/_k/") {
+		t.Errorf("child base URL = %q, want loopback token path", got)
 	}
 }
 

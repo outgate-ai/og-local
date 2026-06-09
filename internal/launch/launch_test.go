@@ -50,7 +50,7 @@ func envValue(environ []string, key string) string {
 }
 
 func okHandler() HandlerFunc {
-	return func(_ provider.Kind, _, _ string) http.Handler {
+	return func(_ string) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	}
 }
@@ -86,11 +86,12 @@ func TestRunWiresServerAndChildEnv(t *testing.T) {
 	if !serverReachable {
 		t.Error("loopback server was not reachable from the child")
 	}
-	if !strings.HasPrefix(childBase, "http://127.0.0.1:") {
-		t.Errorf("child base = %q, want loopback", childBase)
+	if !strings.HasPrefix(childBase, "http://127.0.0.1:") || !strings.Contains(childBase, "/_k/ogl_live_tok") {
+		t.Errorf("child base = %q, want loopback with /_k/<token>", childBase)
 	}
-	if got := envValue(runner.env, "ANTHROPIC_API_KEY"); got != "ogl_live_tok" {
-		t.Errorf("child key = %q, want loopback token", got)
+	// The agent keeps its own key untouched; ogl does not swap it for the token.
+	if got := envValue(runner.env, "ANTHROPIC_API_KEY"); got != "sk-real" {
+		t.Errorf("child key = %q, want the agent's own key preserved", got)
 	}
 	if got := envValue(runner.env, "PATH"); got != "/usr/bin" {
 		t.Errorf("inherited PATH dropped: %q", got)
@@ -125,10 +126,10 @@ func TestRunResolveErrorClosesListener(t *testing.T) {
 		ln = l
 		return l, err
 	}
-	// Missing API key → Resolve fails; the listener must be closed.
+	// Unsupported provider kind → Resolve fails; the listener must be closed.
 	_, err := Run(context.Background(), Options{
-		Kind:        provider.Anthropic,
-		Args:        []string{"claude"},
+		Kind:        provider.Passthrough,
+		Args:        []string{"x"},
 		Env:         map[string]string{},
 		LoopbackTok: "tok",
 		Handler:     okHandler(),

@@ -23,7 +23,7 @@ type Runner interface {
 // HandlerFunc builds the proxy handler once the upstream is known. It is a seam
 // so the server can be wired without the launch package importing the detector
 // (and therefore cgo).
-type HandlerFunc func(kind provider.Kind, upstreamBase, upstreamKey string) http.Handler
+type HandlerFunc func(upstreamBase string) http.Handler
 
 type Options struct {
 	Kind        provider.Kind
@@ -52,7 +52,7 @@ func Run(ctx context.Context, opts Options) (int, error) { //nolint:gocritic // 
 		return 1, err
 	}
 
-	h := opts.Handler(opts.Kind, res.UpstreamBase, res.UpstreamKey)
+	h := opts.Handler(res.UpstreamBase)
 	srv := serve(ln, h)
 	defer shutdown(srv)
 

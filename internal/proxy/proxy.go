@@ -21,9 +21,7 @@ type redactor interface {
 type Config struct {
 	Minter       verifier
 	Redactor     redactor
-	Kind         provider.Kind
 	UpstreamBase string
-	UpstreamKey  string
 	Client       *http.Client
 	MaxBodyBytes int64
 }
@@ -31,9 +29,7 @@ type Config struct {
 type Handler struct {
 	minter       verifier
 	redactor     redactor
-	kind         provider.Kind
 	upstreamBase string
-	upstreamKey  string
 	client       *http.Client
 	maxBodyBytes int64
 }
@@ -50,16 +46,15 @@ func New(cfg Config) *Handler { //nolint:gocritic // one-shot constructor; value
 	return &Handler{
 		minter:       cfg.Minter,
 		redactor:     cfg.Redactor,
-		kind:         cfg.Kind,
 		upstreamBase: strings.TrimRight(cfg.UpstreamBase, "/"),
-		upstreamKey:  cfg.UpstreamKey,
 		client:       client,
 		maxBodyBytes: maxBody,
 	}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if !h.authorized(r) {
+	path, ok := h.authorize(r.URL.Path)
+	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
@@ -70,7 +65,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ep := provider.Route(r.Method, r.URL.Path)
+	ep := provider.Route(r.Method, path)
 
 	var mapping pii.Mapping
 	outBody := body
@@ -84,7 +79,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		mapping = m
 	}
 
-	upReq, err := h.upstreamRequest(r, outBody)
+	upReq, err := h.upstreamRequest(r, path, outBody)
 	if err != nil {
 		//coverage:ignore reason=upstreamRequest only fails on an unreachable NewRequest error.
 		writeError(w, http.StatusBadGateway, "bad upstream request")
@@ -101,8 +96,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.writeResponse(w, ep, resp, mapping)
 }
 
-func (h *Handler) upstreamRequest(r *http.Request, body []byte) (*http.Request, error) {
-	url := h.upstreamBase + r.URL.Path
+func (h *Handler) upstreamRequest(r *http.Request, path string, body []byte) (*http.Request, error) {
+	url := h.upstreamBase + path
 	if r.URL.RawQuery != "" {
 		url += "?" + r.URL.RawQuery
 	}
@@ -113,25 +108,10 @@ func (h *Handler) upstreamRequest(r *http.Request, body []byte) (*http.Request, 
 	}
 	copyHeaders(upReq.Header, r.Header)
 	stripHopHeaders(upReq.Header)
-	h.applyAuth(upReq.Header)
 	upReq.Header.Set("Accept-Encoding", "identity")
 	upReq.Header.Del("Content-Length")
 	upReq.ContentLength = int64(len(body))
 	return upReq, nil
-}
-
-func (h *Handler) applyAuth(header http.Header) {
-	header.Del("Authorization")
-	header.Del("x-api-key")
-	switch h.kind {
-	case provider.Anthropic:
-		header.Set("x-api-key", h.upstreamKey)
-		if header.Get("anthropic-version") == "" {
-			header.Set("anthropic-version", "2023-06-01")
-		}
-	default:
-		header.Set("Authorization", "Bearer "+h.upstreamKey)
-	}
 }
 
 func (h *Handler) writeResponse(w http.ResponseWriter, ep provider.Endpoint, resp *http.Response, mapping pii.Mapping) {

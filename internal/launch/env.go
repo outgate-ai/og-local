@@ -2,6 +2,7 @@ package launch
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/outgate-ai/og-local/internal/provider"
 )
@@ -33,7 +34,6 @@ func envFor(kind provider.Kind) (providerEnv, bool) {
 
 type Resolved struct {
 	UpstreamBase string
-	UpstreamKey  string
 	ChildEnv     map[string]string
 }
 
@@ -41,17 +41,14 @@ type Resolved struct {
 // overlay the child agent needs, given the user's current environment. If the
 // user already set the provider's base-URL variable, that becomes the proxy's
 // own upstream (chaining); otherwise the provider default is used. The overlay
-// repoints the agent at loopbackURL and swaps its API key for loopbackToken so
-// the agent talks to the proxy instead of the provider.
+// only repoints the agent's base-URL at the loopback proxy, embedding the
+// loopback token in the path as /_k/<token>; the agent's own credential
+// (env key, OAuth bearer, or login cache) is left untouched so it flows through
+// to the upstream. No provider key is required to launch.
 func Resolve(kind provider.Kind, env map[string]string, loopbackURL, loopbackToken string) (Resolved, error) {
 	pe, ok := envFor(kind)
 	if !ok {
 		return Resolved{}, fmt.Errorf("launch: unsupported provider kind %v", kind)
-	}
-
-	key := env[pe.keyVar]
-	if key == "" {
-		return Resolved{}, fmt.Errorf("launch: %s is not set", pe.keyVar)
 	}
 
 	upstream := pe.defaultBase
@@ -60,13 +57,11 @@ func Resolve(kind provider.Kind, env map[string]string, loopbackURL, loopbackTok
 	}
 
 	overlay := map[string]string{
-		pe.baseURLVar: loopbackURL,
-		pe.keyVar:     loopbackToken,
+		pe.baseURLVar: strings.TrimRight(loopbackURL, "/") + "/_k/" + loopbackToken,
 	}
 
 	return Resolved{
 		UpstreamBase: upstream,
-		UpstreamKey:  key,
 		ChildEnv:     overlay,
 	}, nil
 }

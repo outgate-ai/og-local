@@ -1,6 +1,7 @@
 package launch
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/outgate-ai/og-local/internal/provider"
@@ -15,39 +16,41 @@ func TestResolveAnthropicDefaultUpstream(t *testing.T) {
 	if r.UpstreamBase != "https://api.anthropic.com" {
 		t.Errorf("upstream = %q", r.UpstreamBase)
 	}
-	if r.UpstreamKey != "sk-ant-real" {
-		t.Errorf("key = %q", r.UpstreamKey)
+	if want := "http://127.0.0.1:5000/_k/ogl_live_tok"; r.ChildEnv["ANTHROPIC_BASE_URL"] != want {
+		t.Errorf("child base = %q, want %q", r.ChildEnv["ANTHROPIC_BASE_URL"], want)
 	}
-	if r.ChildEnv["ANTHROPIC_BASE_URL"] != "http://127.0.0.1:5000" {
-		t.Errorf("child base = %q", r.ChildEnv["ANTHROPIC_BASE_URL"])
-	}
-	if r.ChildEnv["ANTHROPIC_API_KEY"] != "ogl_live_tok" {
-		t.Errorf("child key = %q, want loopback token", r.ChildEnv["ANTHROPIC_API_KEY"])
+	// The agent's own key var must be left untouched so its credential flows to upstream.
+	if _, set := r.ChildEnv["ANTHROPIC_API_KEY"]; set {
+		t.Error("overlay must not touch ANTHROPIC_API_KEY; the agent keeps its own auth")
 	}
 }
 
 func TestResolveOpenAIDefaultUpstream(t *testing.T) {
-	env := map[string]string{"OPENAI_API_KEY": "sk-oai-real"}
-	r, err := Resolve(provider.OpenAIChat, env, "http://127.0.0.1:6000", "ogl_live_tok2")
+	r, err := Resolve(provider.OpenAIChat, map[string]string{}, "http://127.0.0.1:6000", "ogl_live_tok2")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
 	if r.UpstreamBase != "https://api.openai.com" {
 		t.Errorf("upstream = %q", r.UpstreamBase)
 	}
-	if r.ChildEnv["OPENAI_BASE_URL"] != "http://127.0.0.1:6000" {
-		t.Errorf("child base = %q", r.ChildEnv["OPENAI_BASE_URL"])
+	if want := "http://127.0.0.1:6000/_k/ogl_live_tok2"; r.ChildEnv["OPENAI_BASE_URL"] != want {
+		t.Errorf("child base = %q, want %q", r.ChildEnv["OPENAI_BASE_URL"], want)
 	}
-	if r.ChildEnv["OPENAI_API_KEY"] != "ogl_live_tok2" {
-		t.Errorf("child key = %q", r.ChildEnv["OPENAI_API_KEY"])
+}
+
+func TestResolveNoKeyRequired(t *testing.T) {
+	// No API key in the environment must still resolve: the agent authenticates
+	// however it normally does (OAuth / login cache).
+	if _, err := Resolve(provider.Anthropic, map[string]string{}, "http://x", "tok"); err != nil {
+		t.Errorf("resolve must not require an API key, got %v", err)
+	}
+	if _, err := Resolve(provider.OpenAIChat, map[string]string{}, "http://x", "tok"); err != nil {
+		t.Errorf("resolve must not require an API key, got %v", err)
 	}
 }
 
 func TestResolveChainsExistingBaseURL(t *testing.T) {
-	env := map[string]string{
-		"ANTHROPIC_API_KEY":  "sk-ant-real",
-		"ANTHROPIC_BASE_URL": "https://my-gateway.internal/anthropic",
-	}
+	env := map[string]string{"ANTHROPIC_BASE_URL": "https://my-gateway.internal/anthropic"}
 	r, err := Resolve(provider.Anthropic, env, "http://127.0.0.1:5000", "tok")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
@@ -55,18 +58,18 @@ func TestResolveChainsExistingBaseURL(t *testing.T) {
 	if r.UpstreamBase != "https://my-gateway.internal/anthropic" {
 		t.Errorf("upstream should chain to user's base URL, got %q", r.UpstreamBase)
 	}
-	// The child must still point at the loopback proxy, not the chained upstream.
-	if r.ChildEnv["ANTHROPIC_BASE_URL"] != "http://127.0.0.1:5000" {
-		t.Errorf("child base = %q, want loopback", r.ChildEnv["ANTHROPIC_BASE_URL"])
+	if !strings.HasPrefix(r.ChildEnv["ANTHROPIC_BASE_URL"], "http://127.0.0.1:5000/_k/") {
+		t.Errorf("child base = %q, want loopback with token path", r.ChildEnv["ANTHROPIC_BASE_URL"])
 	}
 }
 
-func TestResolveMissingKey(t *testing.T) {
-	if _, err := Resolve(provider.Anthropic, map[string]string{}, "http://x", "tok"); err == nil {
-		t.Error("expected error when API key is unset")
+func TestResolveTrimsTrailingSlashOnLoopback(t *testing.T) {
+	r, err := Resolve(provider.Anthropic, map[string]string{}, "http://127.0.0.1:5000/", "tok")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
 	}
-	if _, err := Resolve(provider.OpenAIChat, map[string]string{"ANTHROPIC_API_KEY": "x"}, "http://x", "tok"); err == nil {
-		t.Error("expected error when OpenAI key is unset")
+	if got := r.ChildEnv["ANTHROPIC_BASE_URL"]; got != "http://127.0.0.1:5000/_k/tok" {
+		t.Errorf("child base = %q, want single slash before _k", got)
 	}
 }
 

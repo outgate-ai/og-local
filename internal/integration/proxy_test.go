@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/outgate-ai/og-local/internal/pii"
-	"github.com/outgate-ai/og-local/internal/provider"
 	"github.com/outgate-ai/og-local/internal/proxy"
 	"github.com/outgate-ai/og-local/internal/redact"
 	"github.com/outgate-ai/og-local/internal/storage/memory"
@@ -76,17 +75,16 @@ func TestProxyPipelineEndToEnd(t *testing.T) {
 	h := proxy.New(proxy.Config{
 		Minter:       minter,
 		Redactor:     pipeline,
-		Kind:         provider.Anthropic,
 		UpstreamBase: upstream.URL,
-		UpstreamKey:  "sk-upstream-real",
 		Client:       upstream.Client(),
 	})
 	front := httptest.NewServer(h)
 	defer front.Close()
 
 	reqBody := `{"model":"claude","messages":[{"role":"user","content":"email ` + secret + ` for me"}]}`
-	req, _ := http.NewRequest("POST", front.URL+"/v1/messages", strings.NewReader(reqBody))
-	req.Header.Set("Authorization", "Bearer "+minter.Mint())
+	// The agent is handed a base URL ending in /_k/<token>; it appends /v1/messages.
+	req, _ := http.NewRequest("POST", front.URL+"/_k/"+minter.Mint()+"/v1/messages", strings.NewReader(reqBody))
+	req.Header.Set("x-api-key", "sk-agent-own-credential")
 
 	resp, err := front.Client().Do(req)
 	if err != nil {

@@ -37,9 +37,7 @@ func (f *fakeRedactor) Redact(_ context.Context, ep provider.Endpoint, body []by
 		}
 		ref.Set(out)
 	}
-	for _, p := range f.pairs {
-		m = append(m, p)
-	}
+	m = append(m, f.pairs...)
 	nb, err := reassemble()
 	return nb, m, err
 }
@@ -53,16 +51,16 @@ func testMinter(t *testing.T) *token.Minter {
 	return m
 }
 
-func mustToken(t *testing.T, m *token.Minter) string {
-	t.Helper()
-	return m.Mint()
+// keyPath wraps a request path with the /_k/<token> prefix the agent is given.
+func keyPath(tok, path string) string {
+	return keyPathPrefix + tok + path
 }
 
-func doRequest(t *testing.T, h *Handler, method, target, tok, body string) *httptest.ResponseRecorder {
+func doRequest(t *testing.T, h *Handler, method, target, body string, headers map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, target, strings.NewReader(body))
-	if tok != "" {
-		req.Header.Set("Authorization", "Bearer "+tok)
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
@@ -71,8 +69,9 @@ func doRequest(t *testing.T, h *Handler, method, target, tok, body string) *http
 
 func TestProxyRejectsMissingToken(t *testing.T) {
 	m := testMinter(t)
-	h := New(Config{Minter: m, Redactor: &fakeRedactor{}, Kind: provider.Anthropic, UpstreamBase: "http://unused"})
-	rr := doRequest(t, h, "POST", "/v1/messages", "", `{}`)
+	h := New(Config{Minter: m, Redactor: &fakeRedactor{}, UpstreamBase: "http://unused"})
+	// No /_k/ prefix at all.
+	rr := doRequest(t, h, "POST", "/v1/messages", `{}`, nil)
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("code = %d, want 401", rr.Code)
 	}
@@ -80,20 +79,23 @@ func TestProxyRejectsMissingToken(t *testing.T) {
 
 func TestProxyRejectsBadToken(t *testing.T) {
 	m := testMinter(t)
-	h := New(Config{Minter: m, Redactor: &fakeRedactor{}, Kind: provider.Anthropic, UpstreamBase: "http://unused"})
-	rr := doRequest(t, h, "POST", "/v1/messages", "ogl_live_garbage", `{}`)
+	h := New(Config{Minter: m, Redactor: &fakeRedactor{}, UpstreamBase: "http://unused"})
+	rr := doRequest(t, h, "POST", keyPath("ogl_live_garbage", "/v1/messages"), `{}`, nil)
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("code = %d, want 401", rr.Code)
 	}
 }
 
-func TestProxyRedactsRequestBodyAndKeyToUpstream(t *testing.T) {
-	var gotBody, gotKey, gotAuth string
+func TestProxyForwardsAgentAuthAndRedactsBody(t *testing.T) {
+	var gotBody, gotXKey, gotVersion string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		gotBody = string(b)
-		gotKey = r.Header.Get("x-api-key")
-		gotAuth = r.Header.Get("Authorization")
+		gotXKey = r.Header.Get("x-api-key")
+		gotVersion = r.Header.Get("anthropic-version")
+		if !strings.HasSuffix(r.URL.Path, "/v1/messages") {
+			t.Errorf("upstream path = %q, want it to end with /v1/messages (token stripped)", r.URL.Path)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
@@ -103,13 +105,12 @@ func TestProxyRedactsRequestBodyAndKeyToUpstream(t *testing.T) {
 	h := New(Config{
 		Minter:       m,
 		Redactor:     &fakeRedactor{pairs: []pii.Pair{{From: "alice@example.com", To: "OG_PRIVATE_EMAIL_abc123"}}},
-		Kind:         provider.Anthropic,
 		UpstreamBase: upstream.URL,
-		UpstreamKey:  "sk-real-secret",
 		Client:       upstream.Client(),
 	})
-	rr := doRequest(t, h, "POST", "/v1/messages", mustToken(t, m),
-		`{"model":"claude","messages":[{"role":"user","content":"mail alice@example.com"}]}`)
+	rr := doRequest(t, h, "POST", keyPath(m.Mint(), "/v1/messages"),
+		`{"model":"claude","messages":[{"role":"user","content":"mail alice@example.com"}]}`,
+		map[string]string{"x-api-key": "sk-agent-own-key", "anthropic-version": "2023-06-01"})
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("code = %d", rr.Code)
@@ -120,19 +121,18 @@ func TestProxyRedactsRequestBodyAndKeyToUpstream(t *testing.T) {
 	if !strings.Contains(gotBody, "OG_PRIVATE_EMAIL_abc123") {
 		t.Errorf("upstream body not redacted: %s", gotBody)
 	}
-	if gotKey != "sk-real-secret" {
-		t.Errorf("upstream x-api-key = %q, want real key", gotKey)
+	if gotXKey != "sk-agent-own-key" {
+		t.Errorf("agent's own x-api-key not forwarded to upstream: %q", gotXKey)
 	}
-	if gotAuth != "" {
-		t.Errorf("inbound loopback token leaked to upstream Authorization: %q", gotAuth)
+	if gotVersion != "2023-06-01" {
+		t.Errorf("agent's anthropic-version header not forwarded: %q", gotVersion)
 	}
 }
 
 func TestProxyRestoresStreamingResponse(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fl, _ := w.(http.Flusher)
-		// Placeholder split across two SSE events.
 		_, _ = io.WriteString(w, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi OG_PRIVATE_\"}}\n")
 		if fl != nil {
 			fl.Flush()
@@ -146,13 +146,11 @@ func TestProxyRestoresStreamingResponse(t *testing.T) {
 	h := New(Config{
 		Minter:       m,
 		Redactor:     &fakeRedactor{pairs: []pii.Pair{{From: "alice@example.com", To: "OG_PRIVATE_EMAIL_abc123"}}},
-		Kind:         provider.Anthropic,
 		UpstreamBase: upstream.URL,
-		UpstreamKey:  "sk-real",
 		Client:       upstream.Client(),
 	})
-	rr := doRequest(t, h, "POST", "/v1/messages", mustToken(t, m),
-		`{"model":"claude","messages":[{"role":"user","content":"x"}]}`)
+	rr := doRequest(t, h, "POST", keyPath(m.Mint(), "/v1/messages"),
+		`{"model":"claude","messages":[{"role":"user","content":"x"}]}`, nil)
 
 	out := rr.Body.String()
 	if strings.Contains(out, "OG_PRIVATE_EMAIL") {
@@ -175,31 +173,25 @@ func TestProxyPassthroughEndpoint(t *testing.T) {
 
 	m := testMinter(t)
 	rdct := &fakeRedactor{err: errors.New("should not be called")}
-	h := New(Config{
-		Minter:       m,
-		Redactor:     rdct,
-		Kind:         provider.OpenAIChat,
-		UpstreamBase: upstream.URL,
-		UpstreamKey:  "sk-real",
-		Client:       upstream.Client(),
-	})
+	h := New(Config{Minter: m, Redactor: rdct, UpstreamBase: upstream.URL, Client: upstream.Client()})
 	body := `{"anything":"passes"}`
-	rr := doRequest(t, h, "POST", "/v1/models", mustToken(t, m), body)
+	rr := doRequest(t, h, "POST", keyPath(m.Mint(), "/v1/models"), body,
+		map[string]string{"Authorization": "Bearer sk-agent-bearer"})
 	if rr.Code != http.StatusOK {
 		t.Fatalf("code = %d", rr.Code)
 	}
 	if gotBody != body {
 		t.Errorf("passthrough body changed: %q", gotBody)
 	}
-	if gotAuth != "Bearer sk-real" {
-		t.Errorf("upstream auth = %q", gotAuth)
+	if gotAuth != "Bearer sk-agent-bearer" {
+		t.Errorf("agent bearer not forwarded on passthrough: %q", gotAuth)
 	}
 }
 
 func TestProxyOversizedBody(t *testing.T) {
 	m := testMinter(t)
-	h := New(Config{Minter: m, Redactor: &fakeRedactor{}, Kind: provider.Anthropic, UpstreamBase: "http://unused", MaxBodyBytes: 16})
-	rr := doRequest(t, h, "POST", "/v1/messages", mustToken(t, m), strings.Repeat("x", 100))
+	h := New(Config{Minter: m, Redactor: &fakeRedactor{}, UpstreamBase: "http://unused", MaxBodyBytes: 16})
+	rr := doRequest(t, h, "POST", keyPath(m.Mint(), "/v1/messages"), strings.Repeat("x", 100), nil)
 	if rr.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("code = %d, want 413", rr.Code)
 	}
@@ -207,13 +199,8 @@ func TestProxyOversizedBody(t *testing.T) {
 
 func TestProxyRedactionError(t *testing.T) {
 	m := testMinter(t)
-	h := New(Config{
-		Minter:       m,
-		Redactor:     &fakeRedactor{err: errors.New("boom")},
-		Kind:         provider.Anthropic,
-		UpstreamBase: "http://unused",
-	})
-	rr := doRequest(t, h, "POST", "/v1/messages", mustToken(t, m), `{"messages":[{"role":"user","content":"x"}]}`)
+	h := New(Config{Minter: m, Redactor: &fakeRedactor{err: errors.New("boom")}, UpstreamBase: "http://unused"})
+	rr := doRequest(t, h, "POST", keyPath(m.Mint(), "/v1/messages"), `{"messages":[{"role":"user","content":"x"}]}`, nil)
 	if rr.Code != http.StatusBadGateway {
 		t.Fatalf("code = %d, want 502", rr.Code)
 	}
@@ -224,19 +211,17 @@ func TestProxyUpstreamUnreachable(t *testing.T) {
 	h := New(Config{
 		Minter:       m,
 		Redactor:     &fakeRedactor{},
-		Kind:         provider.OpenAIChat,
 		UpstreamBase: "http://127.0.0.1:1",
-		UpstreamKey:  "sk",
 		Client:       &http.Client{Timeout: time.Second},
 	})
-	rr := doRequest(t, h, "POST", "/v1/models", mustToken(t, m), `{}`)
+	rr := doRequest(t, h, "POST", keyPath(m.Mint(), "/v1/models"), `{}`, nil)
 	if rr.Code != http.StatusBadGateway {
 		t.Fatalf("code = %d, want 502", rr.Code)
 	}
 }
 
 func TestProxyNonStreamingRestore(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"reply":"contact OG_PRIVATE_EMAIL_abc123 soon"}`))
 	}))
@@ -246,13 +231,11 @@ func TestProxyNonStreamingRestore(t *testing.T) {
 	h := New(Config{
 		Minter:       m,
 		Redactor:     &fakeRedactor{pairs: []pii.Pair{{From: "alice@example.com", To: "OG_PRIVATE_EMAIL_abc123"}}},
-		Kind:         provider.OpenAIChat,
 		UpstreamBase: upstream.URL,
-		UpstreamKey:  "sk",
 		Client:       upstream.Client(),
 	})
-	rr := doRequest(t, h, "POST", "/v1/chat/completions", mustToken(t, m),
-		`{"model":"gpt","messages":[{"role":"user","content":"mail alice@example.com"}]}`)
+	rr := doRequest(t, h, "POST", keyPath(m.Mint(), "/v1/chat/completions"),
+		`{"model":"gpt","messages":[{"role":"user","content":"mail alice@example.com"}]}`, nil)
 	out := rr.Body.String()
 	if strings.Contains(out, "OG_PRIVATE_EMAIL") || !strings.Contains(out, "alice@example.com") {
 		t.Errorf("non-streaming restore failed: %s", out)
@@ -260,7 +243,7 @@ func TestProxyNonStreamingRestore(t *testing.T) {
 }
 
 func TestProxyDefaultsClientAndMaxBody(t *testing.T) {
-	h := New(Config{Minter: testMinter(t), Redactor: &fakeRedactor{}, Kind: provider.Anthropic, UpstreamBase: "http://x"})
+	h := New(Config{Minter: testMinter(t), Redactor: &fakeRedactor{}, UpstreamBase: "http://x"})
 	if h.client == nil {
 		t.Error("client not defaulted")
 	}
@@ -277,8 +260,8 @@ func TestProxyForwardsQueryString(t *testing.T) {
 	}))
 	defer upstream.Close()
 	m := testMinter(t)
-	h := New(Config{Minter: m, Redactor: &fakeRedactor{}, Kind: provider.OpenAIChat, UpstreamBase: upstream.URL, UpstreamKey: "sk", Client: upstream.Client()})
-	doRequest(t, h, "GET", "/v1/models?limit=5&after=x", mustToken(t, m), "")
+	h := New(Config{Minter: m, Redactor: &fakeRedactor{}, UpstreamBase: upstream.URL, Client: upstream.Client()})
+	doRequest(t, h, "GET", keyPath(m.Mint(), "/v1/models")+"?limit=5&after=x", "", nil)
 	if gotQuery != "limit=5&after=x" {
 		t.Errorf("upstream query = %q, want limit=5&after=x", gotQuery)
 	}
@@ -287,7 +270,7 @@ func TestProxyForwardsQueryString(t *testing.T) {
 type nonFlushWriter struct{ http.ResponseWriter }
 
 func TestProxyStreamingWithoutFlusher(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"x OG_PRIVATE_EMAIL_abc123\"}}\n")
 		_, _ = io.WriteString(w, "data: {\"type\":\"message_stop\"}\n")
@@ -297,13 +280,10 @@ func TestProxyStreamingWithoutFlusher(t *testing.T) {
 	h := New(Config{
 		Minter:       m,
 		Redactor:     &fakeRedactor{pairs: []pii.Pair{{From: "alice@example.com", To: "OG_PRIVATE_EMAIL_abc123"}}},
-		Kind:         provider.Anthropic,
 		UpstreamBase: upstream.URL,
-		UpstreamKey:  "sk",
 		Client:       upstream.Client(),
 	})
-	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"messages":[{"role":"user","content":"x"}]}`))
-	req.Header.Set("Authorization", "Bearer "+mustToken(t, m))
+	req := httptest.NewRequest("POST", keyPath(m.Mint(), "/v1/messages"), strings.NewReader(`{"messages":[{"role":"user","content":"x"}]}`))
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(nonFlushWriter{rr}, req)
 	if out := rr.Body.String(); !strings.Contains(out, "alice@example.com") {
@@ -311,14 +291,23 @@ func TestProxyStreamingWithoutFlusher(t *testing.T) {
 	}
 }
 
-func TestBearerTokenFromXAPIKey(t *testing.T) {
-	req := httptest.NewRequest("POST", "/v1/messages", http.NoBody)
-	req.Header.Set("x-api-key", "  tok-123  ")
-	if got := bearerToken(req); got != "tok-123" {
-		t.Errorf("bearerToken = %q, want tok-123", got)
+func TestSplitKeyPath(t *testing.T) {
+	cases := []struct {
+		path      string
+		tok, rest string
+		ok        bool
+	}{
+		{"/_k/abc/v1/messages", "abc", "/v1/messages", true},
+		{"/_k/abc", "abc", "/", true},
+		{"/_k/abc/", "abc", "/", true},
+		{"/v1/messages", "", "", false},
+		{"/_k/", "", "/", true},
+		{"", "", "", false},
 	}
-	req2 := httptest.NewRequest("POST", "/v1/messages", http.NoBody)
-	if got := bearerToken(req2); got != "" {
-		t.Errorf("empty headers should yield empty token, got %q", got)
+	for _, c := range cases {
+		tok, rest, ok := splitKeyPath(c.path)
+		if ok != c.ok || tok != c.tok || rest != c.rest {
+			t.Errorf("splitKeyPath(%q) = (%q,%q,%v), want (%q,%q,%v)", c.path, tok, rest, ok, c.tok, c.rest, c.ok)
+		}
 	}
 }

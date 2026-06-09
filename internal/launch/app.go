@@ -49,13 +49,11 @@ func (a *App) Main(ctx context.Context, kind provider.Kind, args []string) (int,
 	}
 	pipeline := redact.New(det, cache)
 
-	handler := func(k provider.Kind, upstreamBase, upstreamKey string) http.Handler {
+	handler := func(upstreamBase string) http.Handler {
 		return proxy.New(proxy.Config{
 			Minter:       minter,
 			Redactor:     pipeline,
-			Kind:         k,
 			UpstreamBase: upstreamBase,
-			UpstreamKey:  upstreamKey,
 		})
 	}
 
