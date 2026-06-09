@@ -136,6 +136,26 @@ func (d *Decoder) Decode(logits [][]float32, offsets [][2]int) []Span {
 	return d.assemble(path, logits, offsets)
 }
 
+func TrimSpans(text string, spans []Span) []Span {
+	out := spans[:0]
+	for _, s := range spans {
+		for s.Start < s.End && isSpace(text[s.Start]) {
+			s.Start++
+		}
+		for s.End > s.Start && isSpace(text[s.End-1]) {
+			s.End--
+		}
+		if s.Start < s.End {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func isSpace(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
+}
+
 func (d *Decoder) assemble(path []int, logits [][]float32, offsets [][2]int) []Span {
 	var spans []Span
 	i := 0

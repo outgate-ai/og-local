@@ -21,3 +21,6 @@ Thumbs.db
 /.ogl-cache/
 /coverage.patch.out
 /coverage.patch.int.out
+
+# Local-only native libs for the onnx build tag (cgo)
+/.onnxlibs/

@@ -152,6 +152,31 @@ func TestDecodeEndToBeginChain(t *testing.T) {
 	}
 }
 
+func TestTrimSpans(t *testing.T) {
+	text := "x  alice@x.com  y"
+	in := []Span{{1, 15, ClassEmail, 0.9}}
+	got := TrimSpans(text, in)
+	if len(got) != 1 || text[got[0].Start:got[0].End] != "alice@x.com" {
+		t.Fatalf("trim: got %q, want %q", text[got[0].Start:got[0].End], "alice@x.com")
+	}
+}
+
+func TestTrimSpansDropsAllWhitespace(t *testing.T) {
+	text := "a    b"
+	got := TrimSpans(text, []Span{{1, 5, ClassSecret, 0.5}})
+	if len(got) != 0 {
+		t.Errorf("all-whitespace span should be dropped, got %+v", got)
+	}
+}
+
+func TestTrimSpansNoChange(t *testing.T) {
+	text := "alice@x.com"
+	got := TrimSpans(text, []Span{{0, 11, ClassEmail, 0.9}})
+	if len(got) != 1 || got[0].Start != 0 || got[0].End != 11 {
+		t.Errorf("clean span altered: %+v", got)
+	}
+}
+
 func TestNewDecoderHandlesMalformedLabels(t *testing.T) {
 	d := NewDecoder([]string{"O", "weird", "B-x"}, TransitionBiases{})
 	if d.tags[1].prefix != 'O' {
