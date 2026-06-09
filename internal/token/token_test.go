@@ -79,6 +79,51 @@ func TestVerifyRejectsWrongProcess(t *testing.T) {
 	}
 }
 
+func TestVerifySignatureIgnoresPID(t *testing.T) {
+	clk := fakeclock.New(time.Unix(1_700_000_000, 0))
+	m := newTestMinter(t, clk, time.Hour)
+	tok := m.Mint()
+
+	// A different pid would reject under Verify; VerifySignature accepts it and
+	// still reports the embedded pid.
+	m.pid = testPID + 99
+	claims, err := m.VerifySignature(tok)
+	if err != nil {
+		t.Fatalf("VerifySignature with changed pid: err = %v, want nil", err)
+	}
+	if claims.PID != testPID {
+		t.Errorf("claims.PID = %d, want %d (the minting pid)", claims.PID, testPID)
+	}
+}
+
+func TestVerifySignatureRejectsForgedAndExpired(t *testing.T) {
+	clk := fakeclock.New(time.Unix(1_700_000_000, 0))
+	m := newTestMinter(t, clk, time.Hour)
+	tok := m.Mint()
+
+	if _, err := m.VerifySignature("ogl_live_notbase32!!"); !errors.Is(err, ErrMalformed) {
+		t.Errorf("malformed: err = %v, want ErrMalformed", err)
+	}
+	if _, err := m.VerifySignature("nope"); !errors.Is(err, ErrMalformed) {
+		t.Errorf("no prefix: err = %v, want ErrMalformed", err)
+	}
+
+	b := []byte(tok)
+	if b[len(b)-1] == 'A' {
+		b[len(b)-1] = 'B'
+	} else {
+		b[len(b)-1] = 'A'
+	}
+	if _, err := m.VerifySignature(string(b)); err == nil {
+		t.Error("tampered token: expected error, got nil")
+	}
+
+	clk.Advance(2 * time.Hour)
+	if _, err := m.VerifySignature(tok); !errors.Is(err, ErrExpired) {
+		t.Errorf("expired: err = %v, want ErrExpired", err)
+	}
+}
+
 func TestVerifyRejectsExpired(t *testing.T) {
 	start := time.Date(2026, 6, 8, 12, 0, 0, 0, time.UTC)
 	clk := fakeclock.New(start)
