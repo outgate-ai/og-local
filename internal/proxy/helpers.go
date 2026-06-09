@@ -25,10 +25,6 @@ func copyHeaders(dst, src http.Header) {
 	}
 }
 
-// stripHopHeaders removes only the RFC 7230 hop-by-hop headers. It deliberately
-// leaves CDN/edge headers in place: this proxy listens on loopback with no edge
-// in front, so they never appear on inbound requests, and the upstream's own
-// edge sets its own.
 func stripHopHeaders(h http.Header) {
 	for _, k := range hopHeaders {
 		h.Del(k)
@@ -43,10 +39,9 @@ func isJSON(h http.Header) bool {
 	return strings.HasPrefix(h.Get("Content-Type"), "application/json")
 }
 
-// shouldStream decides whether to run the split-safe SSE restorer. An explicit
-// text/event-stream always streams. Otherwise a route that can stream is treated
-// as SSE unless the upstream explicitly declared a JSON (non-streaming) body —
-// the ChatGPT backend streams responses with no Content-Type at all.
+// shouldStream reports whether to run the split-safe SSE restorer: an explicit
+// event-stream, or a streamable route whose body is not declared JSON (some
+// upstreams stream with no Content-Type).
 func shouldStream(ep provider.Endpoint, h http.Header) bool {
 	if isEventStream(h) {
 		return true

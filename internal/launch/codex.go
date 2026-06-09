@@ -87,9 +87,8 @@ func newCodexPrepare(fsys codexFS, userHome, configPath string) func(loopbackURL
 	}
 }
 
-// CodexLaunch carries the codex-specific launch overrides: the upstream the
-// proxy forwards to, and the PrepareChild hook that writes the synthetic Codex
-// home pointing at that upstream's path.
+// CodexLaunch carries the codex-specific launch overrides: the proxy upstream
+// and the PrepareChild hook that writes the synthetic Codex home.
 type CodexLaunch struct {
 	UpstreamBase string
 	PrepareChild func(loopbackURL, token string) (map[string]string, error)
@@ -103,9 +102,8 @@ func newCodexLaunch(fsys codexFS, userHome string, env map[string]string, authJS
 	}
 }
 
-// CodexLaunchFor reads the user's Codex auth mode under userHome and returns the
-// matching upstream + PrepareChild hook: a ChatGPT-subscription login forwards
-// to the backend the OAuth token can call; an API key forwards to the public API.
+// CodexLaunchFor reads the Codex auth mode under userHome and returns the
+// matching upstream and PrepareChild hook (subscription vs. API key).
 func CodexLaunchFor(userHome string, env map[string]string) CodexLaunch {
 	fsys := osCodexFS{}
 	authJSON, _ := fsys.ReadFile(filepath.Join(userHome, ".codex", "auth.json"))

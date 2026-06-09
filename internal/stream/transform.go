@@ -85,10 +85,9 @@ func (t *Transformer) line(line []byte) error {
 	}
 }
 
-// emitData passes a non-delta data payload through, restoring any placeholders
-// it carries. Terminal events (e.g. response.output_text.done, output_item.done)
-// embed the full assistant message, which the agent reads as the final answer —
-// so the originals must be restored there too, not only in the incremental deltas.
+// emitData passes a non-delta data payload through, restoring placeholders in
+// it. Terminal events (e.g. output_text.done, output_item.done) carry the full
+// message the agent reads as the final answer, so they need restoring too.
 func (t *Transformer) emitData(payload []byte) error {
 	restored := t.mapping.Restore(string(payload))
 	return t.emit([]byte(dataPrefix + restored + "\n"))
