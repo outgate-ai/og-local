@@ -7,11 +7,16 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/outgate-ai/og-local/internal/launch"
 	"github.com/outgate-ai/og-local/internal/pii"
+	"github.com/outgate-ai/og-local/internal/provider"
 	"github.com/outgate-ai/og-local/internal/proxy"
 	"github.com/outgate-ai/og-local/internal/redact"
 	"github.com/outgate-ai/og-local/internal/storage/memory"
@@ -181,5 +186,50 @@ func TestResponsesPipelineEndToEnd(t *testing.T) {
 	}
 	if !strings.Contains(out, secret) {
 		t.Errorf("response was not restored: %s", out)
+	}
+}
+
+func TestCodexConfigResolvesToRedactingRoute(t *testing.T) {
+	home := t.TempDir()
+	hook := launch.CodexPrepare(home)
+	env, err := hook("http://127.0.0.1:5000", "ogl_live_tok")
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	codexHome := env["CODEX_HOME"]
+
+	cfg, err := os.ReadFile(filepath.Join(codexHome, "config.toml"))
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	// Pull base_url out of the generated TOML.
+	base := ""
+	for _, line := range strings.Split(string(cfg), "\n") {
+		if strings.HasPrefix(line, "base_url = ") {
+			base = strings.Trim(strings.TrimPrefix(line, "base_url = "), `"`)
+		}
+	}
+	if base == "" {
+		t.Fatalf("no base_url in config:\n%s", cfg)
+	}
+
+	// Codex (wire_api=responses) appends "/responses" to base_url. Verify the
+	// resulting request, after the proxy strips the /_k/<token> prefix, hits the
+	// redacting /v1/responses route.
+	full := base + "/responses" // e.g. http://127.0.0.1:5000/_k/ogl_live_tok/v1/responses
+	u, err := url.Parse(full)
+	if err != nil {
+		t.Fatalf("parse %q: %v", full, err)
+	}
+	rest, ok := strings.CutPrefix(u.Path, "/_k/ogl_live_tok")
+	if !ok {
+		t.Fatalf("path %q lacks the /_k/<token> prefix", u.Path)
+	}
+	ep := provider.Route("POST", rest)
+	if !ep.Redactable() {
+		t.Errorf("codex path %q (stripped: %q) is not redactable", full, rest)
+	}
+	if ep.Kind != provider.OpenAIResponses {
+		t.Errorf("kind = %v, want OpenAIResponses", ep.Kind)
 	}
 }

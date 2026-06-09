@@ -37,7 +37,9 @@ ogl claude "fix the failing test in cmd/server"
 ogl codex --model gpt-5.1 "review this PR"
 ```
 
-`ogl` reads your existing `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`, starts a local proxy on a random loopback port, points the child agent at it via the `*_BASE_URL` env var, and `exec`s the agent as a child process. Your full environment forwards to the child; only the base URL and the auth header are rewritten so the agent talks to `ogl` instead of the provider directly. When the agent exits, `ogl` exits.
+`ogl` starts a local proxy on a random loopback port, points the child agent at it, and `exec`s the agent as a child process. Your full environment forwards to the child, and the agent keeps using whatever credentials it already has — `ogl` only redirects where the requests go. When the agent exits, `ogl` exits.
+
+Most agents are redirected with their `*_BASE_URL` env var. Codex ignores that variable, so `ogl codex` instead writes a dedicated provider config under `~/.codex/ogl` (via `CODEX_HOME`) pointing Codex at the proxy; your own `~/.codex/config.toml` is left untouched.
 
 No daemon, no PID file, no global state.
 
