@@ -15,20 +15,28 @@ Detection runs in-process via the [`openai/privacy-filter`](https://huggingface.
 
 ## Install
 
+macOS / Linux:
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/outgate-ai/og-local/main/scripts/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/outgate-ai/og-local/main/scripts/install.ps1 | iex
 ```
 
 This installs the `ogl` binary and, on platforms that support redaction, places the bundled ONNX Runtime where `ogl` expects it. Then download the detection model once:
 
 ```sh
-ogl model pull          # ~800MB into ~/.cache/og-local, resumable
+ogl model pull          # ~800MB into ~/.cache/og-local
 ```
 
 That's it — `ogl claude "..."` and `ogl codex "..."` now redact.
 
 **Manual download.** Grab a signed archive from [Releases](https://github.com/outgate-ai/og-local/releases/latest):
-`ogl_<version>_<os>_<arch>.tar.gz` (or `.zip` on Windows). On a redaction-capable platform the archive contains `ogl` plus `lib/libonnxruntime.{so,dylib}`; copy that lib to `~/.cache/og-local/runtime/<os>-<arch>/`, or point `OGL_ONNXRUNTIME_LIB` at it.
+`ogl_<version>_<os>_<arch>.tar.gz` (or `.zip` on Windows). On a redaction-capable platform the archive contains the binary plus `lib/libonnxruntime.{so,dylib}` (`lib\onnxruntime.dll` on Windows); copy that lib to `~/.cache/og-local/runtime/<os>-<arch>/`, or point `OGL_ONNXRUNTIME_LIB` at it.
 
 **`go install`.** `go install github.com/outgate-ai/og-local/cmd/ogl@latest` produces a **passthrough build only** — it cannot redact (no cgo, no bundled model runtime). Use the install script or a release archive for redaction.
 
@@ -39,12 +47,14 @@ That's it — `ogl claude "..."` and `ogl codex "..."` now redact.
 | linux / amd64 | ✅ full |
 | linux / arm64 | ✅ full |
 | macOS / arm64 (Apple Silicon) | ✅ full |
+| Windows / amd64 | ✅ full |
 | macOS / amd64 (Intel) | ⚠️ passthrough only |
-| Windows / amd64 | ⚠️ passthrough only |
 
-Redaction needs two upstream native libraries — [`daulet/tokenizers`](https://github.com/daulet/tokenizers) (no Windows build) and [ONNX Runtime](https://github.com/microsoft/onnxruntime) (no Intel-macOS build) — so the three targets above are the ones where both exist. On the passthrough platforms `ogl claude`/`ogl codex` exit with a clear "this build cannot redact" message rather than forwarding your prompt unprotected.
+Redaction needs two native libraries: [`daulet/tokenizers`](https://github.com/daulet/tokenizers) (the Windows staticlib is built from the pinned source during release, since upstream doesn't publish one) and [ONNX Runtime](https://github.com/microsoft/onnxruntime), which ships no Intel-macOS binary — hence the one passthrough target. On a passthrough platform `ogl claude`/`ogl codex` exit with a clear "this build cannot redact" message rather than forwarding your prompt unprotected.
 
 > **macOS first run:** the binary and bundled library aren't notarized yet, so Gatekeeper may quarantine them. Clear it with `xattr -d com.apple.quarantine $(command -v ogl)` (and the lib under `~/.cache/og-local/runtime/`), or right-click → Open once.
+>
+> **Windows first run:** the `.exe` is unsigned, so SmartScreen may warn. Choose "More info" → "Run anyway", or unblock the file with `Unblock-File` in PowerShell.
 
 ## Verify the download
 
@@ -80,7 +90,7 @@ Most agents are redirected with their `*_BASE_URL` env var. Codex ignores that v
 
 No daemon, no PID file, no global state.
 
-## How it works (one paragraph)
+## How it works 
 
 For each outbound request, `ogl` extracts the user-supplied content fields (`messages[].content`, `system`), runs the ONNX-based PII detector locally over each field independently, replaces detected spans with opaque placeholders (`OG_PRIVATE_EMAIL_<hex>`, `OG_SECRET_<hex>`, and the like), forwards the rewritten body upstream, and inverts the substitution on the response, including streaming responses where placeholders may split across SSE events. Request frame fields (`model`, `temperature`, tool schemas, ids) are passed through unchanged. The placeholder↔value mapping lives only for the duration of a single request — there is no persistent vault.
 
