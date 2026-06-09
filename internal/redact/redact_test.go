@@ -6,11 +6,13 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/outgate-ai/og-local/internal/obs"
 	"github.com/outgate-ai/og-local/internal/pii"
 	"github.com/outgate-ai/og-local/internal/provider"
 	"github.com/outgate-ai/og-local/internal/storage/memory"
+	"github.com/outgate-ai/og-local/internal/testutil/fakeclock"
 )
 
 type fakeDetector struct {
@@ -203,6 +205,72 @@ func TestRedactDebugLogsNeverLeakPII(t *testing.T) {
 	}
 	if len(m) == 1 && !strings.Contains(logged, m[0].To) {
 		t.Errorf("debug log missing placeholder %q: %s", m[0].To, logged)
+	}
+}
+
+type clockDetector struct {
+	clk   *fakeclock.Clock
+	step  time.Duration
+	spans map[string][]pii.Span
+	calls int
+}
+
+func (d *clockDetector) Detect(_ context.Context, text string) ([]pii.Span, error) {
+	d.calls++
+	d.clk.Advance(d.step) // simulate the OPF inference taking d.step
+	return d.spans[text], nil
+}
+
+func TestRedactDebugLogsOPFLatencyAndCacheSize(t *testing.T) {
+	usr := "email " + "alice@example.com"
+	clk := fakeclock.New(time.Unix(1_700_000_000, 0))
+	det := &clockDetector{
+		clk:   clk,
+		step:  42 * time.Millisecond,
+		spans: map[string][]pii.Span{usr: {spanOf(usr, "alice@example.com", pii.ClassEmail)}},
+	}
+	var buf bytes.Buffer
+	p := New(det, newCache(t), WithLogger(obs.Debug(&buf)), withClock(clk.Now))
+	body := []byte(`{"model":"claude","messages":[{"role":"user","content":"email alice@example.com"}]}`)
+	ep := provider.Route("POST", "/v1/messages")
+
+	if _, _, err := p.Redact(context.Background(), ep, body); err != nil {
+		t.Fatalf("redact: %v", err)
+	}
+	out := buf.String()
+	if det.calls != 1 {
+		t.Fatalf("expected 1 OPF call, got %d", det.calls)
+	}
+	// The OPF (detector) latency must be logged with the elapsed time.
+	if !strings.Contains(out, "cached=false") || !strings.Contains(out, "dur=42ms") {
+		t.Errorf("missing OPF latency line: %s", out)
+	}
+	if !strings.Contains(out, "cache_size=1") {
+		t.Errorf("missing cache_size after miss: %s", out)
+	}
+}
+
+func TestRedactDebugCacheHitLogsNoInference(t *testing.T) {
+	a := "from alice@example.com"
+	b := "from alice@example.com" // identical -> second field is a cache hit
+	clk := fakeclock.New(time.Unix(1_700_000_000, 0))
+	det := &clockDetector{
+		clk:   clk,
+		step:  10 * time.Millisecond,
+		spans: map[string][]pii.Span{a: {spanOf(a, "alice@example.com", pii.ClassEmail)}},
+	}
+	var buf bytes.Buffer
+	p := New(det, newCache(t), WithLogger(obs.Debug(&buf)), withClock(clk.Now))
+	body := []byte(`{"model":"claude","messages":[{"role":"user","content":"` + a + `"},{"role":"user","content":"` + b + `"}]}`)
+	if _, _, err := p.Redact(context.Background(), provider.Route("POST", "/v1/messages"), body); err != nil {
+		t.Fatalf("redact: %v", err)
+	}
+	if det.calls != 1 {
+		t.Errorf("identical fields must hit cache; OPF calls = %d, want 1", det.calls)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "cached=true") {
+		t.Errorf("expected a cache-hit line: %s", out)
 	}
 }
 

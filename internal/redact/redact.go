@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"log/slog"
+	"time"
 
 	"github.com/outgate-ai/og-local/internal/obs"
 	"github.com/outgate-ai/og-local/internal/pii"
@@ -17,6 +18,7 @@ type Pipeline struct {
 	cache       storage.Store[[]pii.Span]
 	newRedactor func() (*pii.Redactor, error)
 	log         *slog.Logger
+	now         func() time.Time
 }
 
 type Option func(*Pipeline)
@@ -25,12 +27,17 @@ func WithLogger(l *slog.Logger) Option {
 	return func(p *Pipeline) { p.log = obs.OrDiscard(l) }
 }
 
+func withClock(now func() time.Time) Option {
+	return func(p *Pipeline) { p.now = now }
+}
+
 func New(detector pii.Detector, cache storage.Store[[]pii.Span], opts ...Option) *Pipeline {
 	p := &Pipeline{
 		detector:    detector,
 		cache:       cache,
 		newRedactor: pii.NewRedactor,
 		log:         obs.Discard(),
+		now:         time.Now,
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -104,17 +111,31 @@ func (p *Pipeline) detect(ctx context.Context, text string) ([]pii.Span, error) 
 	key := hashText(text)
 	if p.cache != nil {
 		if spans, ok := p.cache.Get(key); ok {
+			p.log.Debug("detect", "cached", true, "field_len", len(text),
+				"spans", len(spans), "cache_size", p.cacheLen())
 			return spans, nil
 		}
 	}
+	start := p.now()
 	spans, err := p.detector.Detect(ctx, text)
+	dur := p.now().Sub(start)
 	if err != nil {
+		p.log.Debug("detect failed", "field_len", len(text), "dur", dur, "err", err)
 		return nil, err
 	}
 	if p.cache != nil {
 		p.cache.Put(key, spans)
 	}
+	p.log.Debug("detect", "cached", false, "field_len", len(text),
+		"spans", len(spans), "dur", dur, "cache_size", p.cacheLen())
 	return spans, nil
+}
+
+func (p *Pipeline) cacheLen() int {
+	if p.cache == nil {
+		return 0
+	}
+	return p.cache.Len()
 }
 
 func hashText(text string) string {
