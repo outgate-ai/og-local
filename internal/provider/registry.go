@@ -9,9 +9,9 @@ func Route(method, path string) Endpoint {
 	path = strings.TrimRight(path, "/")
 	switch {
 	case strings.HasSuffix(path, "/v1/messages"):
-		return Endpoint{Kind: Anthropic, Stream: StreamSSE, extract: anthropicExtract}
+		return Endpoint{Kind: Anthropic, Stream: StreamSSE, extract: anthropicExtract, delta: anthropicDelta{}}
 	case strings.HasSuffix(path, "/v1/chat/completions"):
-		return Endpoint{Kind: OpenAIChat, Stream: StreamSSE, extract: openAIChatExtract}
+		return Endpoint{Kind: OpenAIChat, Stream: StreamSSE, extract: openAIChatExtract, delta: openAIChatDelta{}}
 	default:
 		return Endpoint{Kind: Passthrough}
 	}

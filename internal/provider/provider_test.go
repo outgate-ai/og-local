@@ -40,8 +40,8 @@ func TestRoute(t *testing.T) {
 		if ep.Redactable() != c.redactable {
 			t.Errorf("Route(%s,%s) redactable = %v, want %v", c.method, c.path, ep.Redactable(), c.redactable)
 		}
-		if ep.DeltaCodec() != nil {
-			t.Errorf("Route(%s,%s) unexpectedly has a delta codec", c.method, c.path)
+		if hasCodec := ep.DeltaCodec() != nil; hasCodec != c.redactable {
+			t.Errorf("Route(%s,%s) hasCodec = %v, want %v", c.method, c.path, hasCodec, c.redactable)
 		}
 	}
 }
