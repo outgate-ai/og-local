@@ -48,8 +48,9 @@ stage_target() {
 	echo "stage-native: $target tokenizers -> $native_dir/libtokenizers.a" >&2
 	curl -fsSL "https://github.com/daulet/tokenizers/releases/download/${TOKENIZERS_VERSION}/${tok}" | tar xz -C "$native_dir"
 
-	set -- $(ort_asset "$target")
-	ort_file="$1"; ort_dir="$2"; lib_name="$3"
+	read -r ort_file ort_dir lib_name <<EOF
+$(ort_asset "$target")
+EOF
 	tmp="$(mktemp -d)"
 	echo "stage-native: $target onnxruntime -> $lib_dir/$lib_name" >&2
 	curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ort_file}" | tar xz -C "$tmp"
