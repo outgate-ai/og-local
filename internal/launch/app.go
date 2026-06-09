@@ -34,10 +34,16 @@ type App struct {
 	Logger           *slog.Logger
 	PrepareChild     func(loopbackURL, token string) (map[string]string, error)
 	UpstreamOverride string
+	Confirm          func(msg string) bool
+	PullModel        func(ctx context.Context) error
+	PullRuntime      func(ctx context.Context) error
 }
 
 func (a *App) Main(ctx context.Context, kind provider.Kind, args []string) (int, error) {
 	det, closeFn, err := a.NewDetector()
+	for tries := 0; err != nil && tries < 2 && a.offerDownload(ctx, err); tries++ {
+		det, closeFn, err = a.NewDetector()
+	}
 	if err != nil {
 		return 1, err
 	}
@@ -90,6 +96,17 @@ func DefaultApp() *App {
 		Runner:      ExecRunner{},
 		Stdio:       Stdio{In: os.Stdin, Out: os.Stdout, Err: os.Stderr},
 		Logger:      logger,
+		Confirm:     confirmFrom(stdinIsTerminal, os.Stdin, os.Stderr),
+		PullModel: func(ctx context.Context) error {
+			err := models.Pull(ctx, "", progressTo(os.Stderr))
+			fmt.Fprintln(os.Stderr)
+			return err
+		},
+		PullRuntime: func(ctx context.Context) error {
+			err := models.PullRuntime(ctx, progressTo(os.Stderr))
+			fmt.Fprintln(os.Stderr)
+			return err
+		},
 	}
 }
 

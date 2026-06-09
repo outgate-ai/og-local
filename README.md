@@ -30,10 +30,12 @@ irm https://raw.githubusercontent.com/outgate-ai/og-local/main/scripts/install.p
 This installs the `ogl` binary and, on platforms that support redaction, places the bundled ONNX Runtime where `ogl` expects it. Then download the detection model once:
 
 ```sh
-ogl model pull          # ~800MB into ~/.cache/og-local
+ogl model pull          # ~840MB into ~/.cache/og-local; also fetches the ONNX Runtime if missing
 ```
 
 That's it — `ogl claude "..."` and `ogl codex "..."` now redact.
+
+If anything is missing on first run, `ogl` offers to download it on the spot (showing the expected size) before launching the agent; in non-interactive sessions it keeps the explicit error instead.
 
 **Manual download.** Grab a signed archive from [Releases](https://github.com/outgate-ai/og-local/releases/latest):
 `ogl_<version>_<os>_<arch>.tar.gz` (or `.zip` on Windows). On a redaction-capable platform the archive contains the binary plus `lib/libonnxruntime.{so,dylib}` (`lib\onnxruntime.dll` on Windows); copy that lib to `~/.cache/og-local/runtime/<os>-<arch>/`, or point `OGL_ONNXRUNTIME_LIB` at it.

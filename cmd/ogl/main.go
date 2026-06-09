@@ -25,7 +25,8 @@ Usage:
 Commands:
   claude [args...]    Run the Claude agent through the local privacy proxy
   codex [args...]     Run the Codex agent through the local privacy proxy
-  model pull [name]   Download a model into the cache (default: openai/privacy-filter)
+  model pull [name]   Download a model and the ONNX Runtime into the cache
+                      (default model: openai/privacy-filter)
   model list          List catalog models and their cache status
   model delete <name> Remove a cached model from disk
   version             Print build information
@@ -99,7 +100,7 @@ func printVersion() {
 }
 
 const modelUsage = `Usage:
-  ogl model pull [name]     Download a model into the cache
+  ogl model pull [name]     Download a model and the ONNX Runtime into the cache
   ogl model list            List catalog models and their cache status
   ogl model delete <name>   Remove a cached model from disk
 `
@@ -127,17 +128,26 @@ func runModel(args []string) int {
 		if len(args) > 1 {
 			name = args[1]
 		}
-		err := models.Pull(context.Background(), name, func(f models.File, done, total int64) {
+		progress := func(f models.File, done, total int64) {
 			if total > 0 {
 				fmt.Fprintf(os.Stderr, "\r%s %d/%d bytes", f.Path, done, total)
 			} else {
 				fmt.Fprintf(os.Stderr, "\r%s %d bytes", f.Path, done)
 			}
-		})
+		}
+		err := models.Pull(context.Background(), name, progress)
 		fmt.Fprintln(os.Stderr)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "pull failed: %v\n", err)
 			return 1
+		}
+		if models.RuntimeDownloadSize() > 0 {
+			if err := models.PullRuntime(context.Background(), progress); err != nil {
+				fmt.Fprintln(os.Stderr)
+				fmt.Fprintf(os.Stderr, "pull failed: %v\n", err)
+				return 1
+			}
+			fmt.Fprintln(os.Stderr)
 		}
 		return 0
 	case "delete":
