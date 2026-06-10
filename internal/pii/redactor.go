@@ -9,6 +9,10 @@ import (
 
 type Mapping []Pair
 
+// minDetectionLen drops 1-2 byte spans, which the model emits as noise in long
+// texts; a single multi-byte rune (e.g. a CJK name) still passes.
+const minDetectionLen = 3
+
 type Redactor struct {
 	nonce []byte
 }
@@ -38,7 +42,7 @@ func (r *Redactor) Apply(text string, spans []Span) (string, Mapping) {
 	seen := make(map[string]string)
 	var m Mapping
 	for _, s := range spans {
-		if s.Start < 0 || s.End > len(text) || s.Start >= s.End {
+		if s.Start < 0 || s.End > len(text) || s.End-s.Start < minDetectionLen {
 			continue
 		}
 		value := text[s.Start:s.End]
