@@ -88,3 +88,24 @@ func TestNewRedactorRandomNonce(t *testing.T) {
 		t.Error("two redactors produced the same placeholder; nonce not random")
 	}
 }
+
+func TestApplyDropsShortSpans(t *testing.T) {
+	r := fixedRedactor()
+	text := "id X ab Bob 王王 done"
+	spans := []Span{
+		{3, 4, ClassPerson, 0.9},   // "X" — 1 byte, dropped
+		{5, 7, ClassPerson, 0.9},   // "ab" — 2 bytes, dropped
+		{8, 11, ClassPerson, 0.9},  // "Bob" — 3 bytes, kept
+		{12, 18, ClassPerson, 0.9}, // "王王" — 6 bytes (2 runes), kept
+	}
+	out, m := r.Apply(text, spans)
+	if len(m) != 2 {
+		t.Fatalf("mapping = %d pairs, want 2 (short spans dropped): %v", len(m), m)
+	}
+	if !strings.Contains(out, "X") || !strings.Contains(out, "ab") {
+		t.Errorf("short values must remain unredacted: %s", out)
+	}
+	if strings.Contains(out, "Bob") || strings.Contains(out, "王王") {
+		t.Errorf("3+ byte values must be redacted: %s", out)
+	}
+}
