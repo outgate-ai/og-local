@@ -7,6 +7,10 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/outgate-ai/og-local)](https://goreportcard.com/report/github.com/outgate-ai/og-local)
 [![License: BSL 1.1](https://img.shields.io/badge/license-BSL%201.1-blue.svg)](LICENSE)
 
+<p align="center">
+  <img src="docs/demo.gif" alt="ogl redacting a coding-agent prompt in real time" width="800">
+</p>
+
 When your coding agent reads a file, the file gets shipped to a third-party LLM. Often that's fine. The file is open-source, or your team has a vendor agreement that covers it. Sometimes it isn't: a `.env` slipped into a diff, a customer email in a test fixture, an API key in a comment, a stack trace from a private service.
 
 **og-local** is a single binary that runs on your machine, intercepts the API calls your agent makes, detects PII and secrets in the prompt body before it leaves localhost, swaps them with opaque placeholders, forwards the redacted prompt upstream, and transparently restores the originals in the response. The agent never sees the difference. The upstream provider never sees the secrets.
