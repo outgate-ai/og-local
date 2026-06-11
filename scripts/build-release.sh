@@ -64,9 +64,13 @@ cp "$ROOT/LICENSE" "$ROOT/README.md" "$stage/"
 
 name="ogl_${VERSION#v}_${OS}_${ARCH}"
 if [ "$OS" = windows ]; then
+	# No alias links in the zip: Expand-Archive cannot restore symlinks, so
+	# install.ps1 creates ogl-claude.exe / ogl-codex.exe at install time.
 	(cd "$stage" && zip -q -r "$ROOT/dist/$name.zip" .)
 	echo "dist/$name.zip"
 else
+	ln -sf "$bin" "$stage/ogl-claude"
+	ln -sf "$bin" "$stage/ogl-codex"
 	tar -czf "$ROOT/dist/$name.tar.gz" -C "$stage" .
 	echo "dist/$name.tar.gz"
 fi

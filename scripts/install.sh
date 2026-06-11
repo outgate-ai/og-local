@@ -81,13 +81,20 @@ tar -xzf "${TEMP_DIR}/a.tar.gz" -C "$TEMP_DIR"
 
 INSTALL_DIR="${OGL_INSTALL_DIR:-/usr/local/bin}"
 mkdir -p "$INSTALL_DIR" 2>/dev/null || true
-if [ -w "$INSTALL_DIR" ]; then
-    mv "${TEMP_DIR}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
-else
+as_root() { if [ -w "$INSTALL_DIR" ]; then "$@"; else sudo "$@"; fi; }
+
+if [ ! -w "$INSTALL_DIR" ]; then
     status "Installing to ${INSTALL_DIR} (may require password)..."
-    sudo mv "${TEMP_DIR}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
 fi
+as_root mv "${TEMP_DIR}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
 chmod +x "${INSTALL_DIR}/${BINARY_NAME}" 2>/dev/null || true
+
+# Alias binaries: ogl dispatches on its invoked name, so a symlink named
+# ogl-claude/ogl-codex runs that agent through the proxy — handy for IDE
+# settings that take a single executable path.
+for ALIAS in ogl-claude ogl-codex; do
+    as_root ln -sf "$BINARY_NAME" "${INSTALL_DIR}/${ALIAS}"
+done
 
 # -- Place the bundled ONNX Runtime where the binary looks for it --
 # Mirror CacheRoot(): OGL_CACHE_DIR > XDG_CACHE_HOME/og-local > ~/.cache/og-local.
@@ -118,6 +125,7 @@ if command -v ogl >/dev/null 2>&1; then
         echo "  ogl model pull          Download the detection model (~800MB, one-time)"
         echo "  ogl claude \"...\"        Run Claude through the local privacy proxy"
         echo "  ogl codex \"...\"         Run Codex through the local privacy proxy"
+        echo "  ogl-claude / ogl-codex  Single-binary aliases for IDE integrations (see README)"
     else
         echo "${yellow}Note:${plain} ${OS}/${ARCH} ships the passthrough build — it forwards"
         echo "requests but does NOT redact. Redaction is available on linux/amd64,"
