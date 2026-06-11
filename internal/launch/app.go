@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	cacheEntries = 1024
+	cacheEntries = 8192
 	tokenTTL     = 30 * 24 * time.Hour
 )
 
