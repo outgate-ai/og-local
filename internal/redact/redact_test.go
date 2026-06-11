@@ -3,6 +3,7 @@ package redact
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -14,6 +15,15 @@ import (
 	"github.com/outgate-ai/og-local/internal/storage/memory"
 	"github.com/outgate-ai/og-local/internal/testutil/fakeclock"
 )
+
+func anthropicBody(t *testing.T, content string) []byte {
+	t.Helper()
+	c, err := json.Marshal(content)
+	if err != nil {
+		t.Fatalf("marshal content: %v", err)
+	}
+	return []byte(`{"model":"claude","messages":[{"role":"user","content":` + string(c) + `}]}`)
+}
 
 type fakeDetector struct {
 	spansFor map[string][]pii.Span
@@ -276,6 +286,86 @@ func TestRedactWithLoggerNilIsSafe(t *testing.T) {
 	body := []byte(`{"model":"claude","messages":[{"role":"user","content":"hi"}]}`)
 	if _, _, err := p.Redact(context.Background(), provider.Route("POST", "/v1/messages"), body); err != nil {
 		t.Fatalf("nil logger must be safe: %v", err)
+	}
+}
+
+func TestRedactChunkedFieldSpansAtFieldOffsets(t *testing.T) {
+	text := strings.Repeat("a", 10) + "\n" + "bob@x.io 12345\n" + strings.Repeat("c", 10)
+	mid := "bob@x.io 12345\n"
+	det := &fakeDetector{spansFor: map[string][]pii.Span{
+		mid: {spanOf(mid, "bob@x.io", pii.ClassEmail)},
+	}}
+	p := New(det, newCache(t), withChunking(16, 4))
+	ep := provider.Route("POST", "/v1/messages")
+
+	out, m, err := p.Redact(context.Background(), ep, anthropicBody(t, text))
+	if err != nil {
+		t.Fatalf("redact: %v", err)
+	}
+	if len(det.calls) != 3 {
+		t.Fatalf("expected one detect call per chunk, got %d: %q", len(det.calls), det.calls)
+	}
+	if len(m) != 1 || m[0].From != "bob@x.io" {
+		t.Fatalf("mapping = %+v", m)
+	}
+	if strings.Contains(string(out), "bob@x.io") {
+		t.Errorf("value survived: %s", out)
+	}
+	if !strings.Contains(string(out), strings.Repeat("a", 10)) || !strings.Contains(string(out), "12345") {
+		t.Errorf("non-PII chunk text mangled: %s", out)
+	}
+}
+
+func TestRedactAppendOnlyReusesChunks(t *testing.T) {
+	base := strings.Repeat("a", 10) + "\n" + "bob@x.io 12345\n" + strings.Repeat("c", 10)
+	det := &fakeDetector{spansFor: map[string][]pii.Span{}}
+	p := New(det, newCache(t), withChunking(16, 4))
+	ep := provider.Route("POST", "/v1/messages")
+
+	if _, _, err := p.Redact(context.Background(), ep, anthropicBody(t, base)); err != nil {
+		t.Fatalf("first redact: %v", err)
+	}
+	first := len(det.calls)
+	if _, _, err := p.Redact(context.Background(), ep, anthropicBody(t, base+"XY")); err != nil {
+		t.Fatalf("second redact: %v", err)
+	}
+	added := det.calls[first:]
+	if len(added) != 1 || added[0] != strings.Repeat("c", 10)+"XY" {
+		t.Errorf("append must re-detect only the final chunk, got %q", added)
+	}
+}
+
+func TestRedactHardCutTruncationRedetected(t *testing.T) {
+	text := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN"
+	chunk0, chunk1 := text[0:16], text[12:28]
+	det := &fakeDetector{spansFor: map[string][]pii.Span{
+		chunk0: {{Start: 13, End: 16, Class: pii.ClassSecret}}, // "nop" truncated at the cut
+		chunk1: {{Start: 1, End: 4, Class: pii.ClassSecret}},   // "nop" whole inside the overlap
+	}}
+	p := New(det, newCache(t), withChunking(16, 4))
+	ep := provider.Route("POST", "/v1/messages")
+
+	_, m, err := p.Redact(context.Background(), ep, anthropicBody(t, text))
+	if err != nil {
+		t.Fatalf("redact: %v", err)
+	}
+	if len(m) != 1 || m[0].From != "nop" {
+		t.Fatalf("expected the overlap re-detection to win once, got %+v", m)
+	}
+}
+
+func TestRedactTinyFieldSkipsDetectorAndCache(t *testing.T) {
+	det := &fakeDetector{spansFor: map[string][]pii.Span{}}
+	cache := newCache(t)
+	p := New(det, cache)
+	if _, _, err := p.Redact(context.Background(), provider.Route("POST", "/v1/messages"), anthropicBody(t, "hi")); err != nil {
+		t.Fatalf("redact: %v", err)
+	}
+	if len(det.calls) != 0 {
+		t.Errorf("sub-minimum field reached detector: %q", det.calls)
+	}
+	if cache.Len() != 0 {
+		t.Errorf("sub-minimum field cached: %d entries", cache.Len())
 	}
 }
 

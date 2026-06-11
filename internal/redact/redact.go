@@ -13,12 +13,24 @@ import (
 	"github.com/outgate-ai/og-local/internal/storage"
 )
 
+// chunkTarget bounds a single detector call. The model's sliding-window
+// attention gives it a receptive field of roughly a thousand tokens, so a
+// 4 KiB chunk loses no usable context while keeping inference memory and
+// detector-mutex hold time flat. chunkOverlap is re-detected after hard
+// (mid-run) cuts so spans truncated by the cut are seen whole.
+const (
+	chunkTarget  = 4096
+	chunkOverlap = 512
+)
+
 type Pipeline struct {
-	detector    pii.Detector
-	cache       storage.Store[[]pii.Span]
-	newRedactor func() (*pii.Redactor, error)
-	log         *slog.Logger
-	now         func() time.Time
+	detector     pii.Detector
+	cache        storage.Store[[]pii.Span]
+	newRedactor  func() (*pii.Redactor, error)
+	log          *slog.Logger
+	now          func() time.Time
+	chunkTarget  int
+	chunkOverlap int
 }
 
 type Option func(*Pipeline)
@@ -31,13 +43,19 @@ func withClock(now func() time.Time) Option {
 	return func(p *Pipeline) { p.now = now }
 }
 
+func withChunking(target, overlap int) Option {
+	return func(p *Pipeline) { p.chunkTarget, p.chunkOverlap = target, overlap }
+}
+
 func New(detector pii.Detector, cache storage.Store[[]pii.Span], opts ...Option) *Pipeline {
 	p := &Pipeline{
-		detector:    detector,
-		cache:       cache,
-		newRedactor: pii.NewRedactor,
-		log:         obs.Discard(),
-		now:         time.Now,
+		detector:     detector,
+		cache:        cache,
+		newRedactor:  pii.NewRedactor,
+		log:          obs.Discard(),
+		now:          time.Now,
+		chunkTarget:  chunkTarget,
+		chunkOverlap: chunkOverlap,
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -108,6 +126,28 @@ func placeholdersOf(m pii.Mapping) []string {
 }
 
 func (p *Pipeline) detect(ctx context.Context, text string) ([]pii.Span, error) {
+	if len(text) < pii.MinDetectionLen {
+		return nil, nil
+	}
+	chunks := splitChunks(text, p.chunkTarget, p.chunkOverlap)
+	perChunk := make([][]pii.Span, len(chunks))
+	for i, c := range chunks {
+		if len(c.text) < pii.MinDetectionLen {
+			continue
+		}
+		spans, err := p.detectChunk(ctx, c.text)
+		if err != nil {
+			return nil, err
+		}
+		perChunk[i] = spans
+	}
+	return mergeSpans(chunks, perChunk), nil
+}
+
+// detectChunk caches raw chunk-relative detector output. Hard-cut edge
+// filtering happens in mergeSpans, never before Put: the same chunk text can
+// sit at a different position of another field.
+func (p *Pipeline) detectChunk(ctx context.Context, text string) ([]pii.Span, error) {
 	key := hashText(text)
 	if p.cache != nil {
 		if spans, ok := p.cache.Get(key); ok {
