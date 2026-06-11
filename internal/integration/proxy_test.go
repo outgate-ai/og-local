@@ -75,7 +75,10 @@ func TestProxyPipelineEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cache: %v", err)
 	}
-	pipeline := redact.New(scriptedDetector{value: secret, class: pii.ClassEmail}, cache)
+	pipeline, err := redact.New(scriptedDetector{value: secret, class: pii.ClassEmail}, cache)
+	if err != nil {
+		t.Fatalf("pipeline: %v", err)
+	}
 
 	h := proxy.New(proxy.Config{
 		Minter:       minter,
@@ -151,7 +154,10 @@ func TestResponsesPipelineEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cache: %v", err)
 	}
-	pipeline := redact.New(scriptedDetector{value: secret, class: pii.ClassEmail}, cache)
+	pipeline, err := redact.New(scriptedDetector{value: secret, class: pii.ClassEmail}, cache)
+	if err != nil {
+		t.Fatalf("pipeline: %v", err)
+	}
 
 	h := proxy.New(proxy.Config{
 		Minter:       minter,
@@ -230,7 +236,10 @@ func TestSubscriptionCodexPipelineEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cache: %v", err)
 	}
-	pipeline := redact.New(scriptedDetector{value: secret, class: pii.ClassEmail}, cache)
+	pipeline, err := redact.New(scriptedDetector{value: secret, class: pii.ClassEmail}, cache)
+	if err != nil {
+		t.Fatalf("pipeline: %v", err)
+	}
 
 	// Subscription Codex forwards to the ChatGPT backend; the upstream base is
 	// host-only and the /backend-api/codex/responses path flows through.

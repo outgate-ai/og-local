@@ -26,7 +26,7 @@ const (
 type Pipeline struct {
 	detector     pii.Detector
 	cache        storage.Store[[]pii.Span]
-	newRedactor  func() (*pii.Redactor, error)
+	red          *pii.Redactor
 	log          *slog.Logger
 	now          func() time.Time
 	chunkTarget  int
@@ -47,11 +47,20 @@ func withChunking(target, overlap int) Option {
 	return func(p *Pipeline) { p.chunkTarget, p.chunkOverlap = target, overlap }
 }
 
-func New(detector pii.Detector, cache storage.Store[[]pii.Span], opts ...Option) *Pipeline {
+// New builds a Pipeline with one placeholder nonce for its whole lifetime:
+// the same value redacts to the same placeholder across requests, so redacted
+// conversation prefixes stay byte-identical and provider-side prompt caches
+// keep hitting. The mapping itself is still rebuilt per request.
+func New(detector pii.Detector, cache storage.Store[[]pii.Span], opts ...Option) (*Pipeline, error) {
+	red, err := pii.NewRedactor()
+	if err != nil {
+		//coverage:ignore reason=crypto/rand.Read does not fail on supported platforms.
+		return nil, err
+	}
 	p := &Pipeline{
 		detector:     detector,
 		cache:        cache,
-		newRedactor:  pii.NewRedactor,
+		red:          red,
 		log:          obs.Discard(),
 		now:          time.Now,
 		chunkTarget:  chunkTarget,
@@ -60,7 +69,7 @@ func New(detector pii.Detector, cache storage.Store[[]pii.Span], opts ...Option)
 	for _, opt := range opts {
 		opt(p)
 	}
-	return p
+	return p, nil
 }
 
 func (p *Pipeline) Redact(ctx context.Context, ep provider.Endpoint, body []byte) ([]byte, pii.Mapping, error) {
@@ -73,12 +82,6 @@ func (p *Pipeline) Redact(ctx context.Context, ep provider.Endpoint, body []byte
 		return out, nil, err
 	}
 
-	red, err := p.newRedactor()
-	if err != nil {
-		//coverage:ignore reason=crypto/rand.Read does not fail on supported platforms.
-		return nil, nil, err
-	}
-
 	merged := pii.Mapping{}
 	seen := map[string]bool{}
 	for i, ref := range refs {
@@ -89,7 +92,7 @@ func (p *Pipeline) Redact(ctx context.Context, ep provider.Endpoint, body []byte
 		p.log.Debug("field detected",
 			"field", i, "field_len", len(ref.Text),
 			"spans", len(spans), "classes", classesOf(spans))
-		redacted, m := red.Apply(ref.Text, spans)
+		redacted, m := p.red.Apply(ref.Text, spans)
 		ref.Set(redacted)
 		for _, pair := range m {
 			if seen[pair.From] {
