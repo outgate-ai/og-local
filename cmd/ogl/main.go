@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/outgate-ai/og-local/internal/launch"
 	"github.com/outgate-ai/og-local/internal/models"
@@ -32,6 +34,11 @@ Commands:
   version             Print build information
   help                Print this help
 
+Alias binaries:
+  ogl-claude / ogl-codex behave exactly like 'ogl claude' / 'ogl codex'.
+  Point IDE settings that take one executable path at them, e.g. VS Code's
+  claudeCode.claudeProcessWrapper (see the README).
+
 Environment:
   OGL_CACHE_DIR       Override the model cache directory (default: ~/.cache/og-local)
   OGL_DEBUG           Set to 1 to log proxy activity to a file (no PII values);
@@ -42,6 +49,9 @@ Environment:
 
 func main() {
 	args := os.Args[1:]
+	if cmd, ok := invokedAs(os.Args[0]); ok {
+		args = append([]string{cmd}, args...)
+	}
 	if len(args) == 0 {
 		printUsage(os.Stdout)
 		return
@@ -70,6 +80,20 @@ func main() {
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", args[0])
 		printUsage(os.Stderr)
 		os.Exit(2)
+	}
+}
+
+// invokedAs maps an alias binary name (a symlink, hardlink, or copy of ogl
+// named ogl-claude or ogl-codex) to its subcommand, so IDE settings that take
+// a single executable path can launch the proxied agent directly.
+func invokedAs(argv0 string) (string, bool) {
+	switch strings.TrimSuffix(filepath.Base(argv0), ".exe") {
+	case "ogl-claude":
+		return "claude", true
+	case "ogl-codex":
+		return "codex", true
+	default:
+		return "", false
 	}
 }
 

@@ -48,6 +48,20 @@ function Install-Ogl {
         Copy-Item (Join-Path $InstallDir 'lib\onnxruntime.dll') (Join-Path $RtDir 'onnxruntime.dll') -Force
         Write-Host ">>> Placed ONNX Runtime at $RtDir\onnxruntime.dll"
 
+        # Alias binaries: ogl dispatches on its invoked name, so ogl-claude.exe /
+        # ogl-codex.exe run that agent through the proxy — handy for IDE settings
+        # that take a single executable path. Hardlink when the volume allows it,
+        # else copy.
+        foreach ($Alias in 'ogl-claude.exe', 'ogl-codex.exe') {
+            $AliasPath = Join-Path $InstallDir $Alias
+            Remove-Item $AliasPath -Force -ErrorAction SilentlyContinue
+            try {
+                New-Item -ItemType HardLink -Path $AliasPath -Target (Join-Path $InstallDir 'ogl.exe') | Out-Null
+            } catch {
+                Copy-Item (Join-Path $InstallDir 'ogl.exe') $AliasPath -Force
+            }
+        }
+
         # Add the install dir to the user PATH if it isn't there yet.
         $UserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
         if (($UserPath -split ';') -notcontains $InstallDir) {
