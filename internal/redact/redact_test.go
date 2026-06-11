@@ -3,6 +3,7 @@ package redact
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -11,9 +12,28 @@ import (
 	"github.com/outgate-ai/og-local/internal/obs"
 	"github.com/outgate-ai/og-local/internal/pii"
 	"github.com/outgate-ai/og-local/internal/provider"
+	"github.com/outgate-ai/og-local/internal/storage"
 	"github.com/outgate-ai/og-local/internal/storage/memory"
 	"github.com/outgate-ai/og-local/internal/testutil/fakeclock"
 )
+
+func newPipeline(t *testing.T, det pii.Detector, cache storage.Store[[]pii.Span], opts ...Option) *Pipeline {
+	t.Helper()
+	p, err := New(det, cache, opts...)
+	if err != nil {
+		t.Fatalf("pipeline: %v", err)
+	}
+	return p
+}
+
+func anthropicBody(t *testing.T, content string) []byte {
+	t.Helper()
+	c, err := json.Marshal(content)
+	if err != nil {
+		t.Fatalf("marshal content: %v", err)
+	}
+	return []byte(`{"model":"claude","messages":[{"role":"user","content":` + string(c) + `}]}`)
+}
 
 type fakeDetector struct {
 	spansFor map[string][]pii.Span
@@ -48,7 +68,7 @@ func TestRedactPerFieldIndependentDetection(t *testing.T) {
 	det := &fakeDetector{spansFor: map[string][]pii.Span{
 		usr: {spanOf(usr, "alice@example.com", pii.ClassEmail)},
 	}}
-	p := New(det, newCache(t))
+	p := newPipeline(t, det, newCache(t))
 	body := []byte(`{"model":"claude","system":"system says hi","messages":[{"role":"user","content":"email alice@example.com"}]}`)
 	ep := provider.Route("POST", "/v1/messages")
 
@@ -78,7 +98,7 @@ func TestRedactPerFieldIndependentDetection(t *testing.T) {
 
 func TestRedactModelNeverDetected(t *testing.T) {
 	det := &fakeDetector{spansFor: map[string][]pii.Span{}}
-	p := New(det, newCache(t))
+	p := newPipeline(t, det, newCache(t))
 	body := []byte(`{"model":"secret-model-x","messages":[{"role":"user","content":"hi"}]}`)
 	ep := provider.Route("POST", "/v1/chat/completions")
 	if _, _, err := p.Redact(context.Background(), ep, body); err != nil {
@@ -96,7 +116,7 @@ func TestRedactCacheHitOnRepeatedField(t *testing.T) {
 	det := &fakeDetector{spansFor: map[string][]pii.Span{
 		text: {spanOf(text, "alice@example.com", pii.ClassEmail)},
 	}}
-	p := New(det, newCache(t))
+	p := newPipeline(t, det, newCache(t))
 	body := []byte(`{"model":"claude","messages":[{"role":"user","content":"repeated alice@example.com here"},{"role":"user","content":"repeated alice@example.com here"}]}`)
 	ep := provider.Route("POST", "/v1/messages")
 	if _, m, err := p.Redact(context.Background(), ep, body); err != nil {
@@ -122,7 +142,7 @@ func TestRedactCrossFieldPlaceholderConsistency(t *testing.T) {
 		a: {spanOf(a, "alice@example.com", pii.ClassEmail)},
 		b: {spanOf(b, "alice@example.com", pii.ClassEmail)},
 	}}
-	p := New(det, newCache(t))
+	p := newPipeline(t, det, newCache(t))
 	body := []byte(`{"model":"claude","messages":[{"role":"user","content":"from alice@example.com"},{"role":"assistant","content":"reply alice@example.com"}]}`)
 	ep := provider.Route("POST", "/v1/messages")
 	out, m, err := p.Redact(context.Background(), ep, body)
@@ -139,7 +159,7 @@ func TestRedactCrossFieldPlaceholderConsistency(t *testing.T) {
 
 func TestRedactPassthroughNoFields(t *testing.T) {
 	det := &fakeDetector{}
-	p := New(det, newCache(t))
+	p := newPipeline(t, det, newCache(t))
 	body := []byte(`{"whatever":true}`)
 	ep := provider.Route("GET", "/v1/models")
 	out, m, err := p.Redact(context.Background(), ep, body)
@@ -159,7 +179,7 @@ func TestRedactPassthroughNoFields(t *testing.T) {
 
 func TestRedactDetectorError(t *testing.T) {
 	det := &fakeDetector{err: errors.New("boom"), spansFor: map[string][]pii.Span{}}
-	p := New(det, newCache(t))
+	p := newPipeline(t, det, newCache(t))
 	body := []byte(`{"model":"claude","messages":[{"role":"user","content":"email alice@example.com"}]}`)
 	ep := provider.Route("POST", "/v1/messages")
 	if _, _, err := p.Redact(context.Background(), ep, body); err == nil {
@@ -168,7 +188,7 @@ func TestRedactDetectorError(t *testing.T) {
 }
 
 func TestRedactInvalidBody(t *testing.T) {
-	p := New(&fakeDetector{}, newCache(t))
+	p := newPipeline(t, &fakeDetector{}, newCache(t))
 	ep := provider.Route("POST", "/v1/messages")
 	if _, _, err := p.Redact(context.Background(), ep, []byte(`{bad json`)); err == nil {
 		t.Error("expected error on invalid body")
@@ -182,7 +202,7 @@ func TestRedactDebugLogsNeverLeakPII(t *testing.T) {
 		usr: {spanOf(usr, secret, pii.ClassEmail)},
 	}}
 	var buf bytes.Buffer
-	p := New(det, newCache(t), WithLogger(obs.Debug(&buf)))
+	p := newPipeline(t, det, newCache(t), WithLogger(obs.Debug(&buf)))
 	body := []byte(`{"model":"claude","messages":[{"role":"user","content":"email alice@example.com"}]}`)
 	ep := provider.Route("POST", "/v1/messages")
 	_, m, err := p.Redact(context.Background(), ep, body)
@@ -227,7 +247,7 @@ func TestRedactDebugLogsOPFLatencyAndCacheSize(t *testing.T) {
 		spans: map[string][]pii.Span{usr: {spanOf(usr, "alice@example.com", pii.ClassEmail)}},
 	}
 	var buf bytes.Buffer
-	p := New(det, newCache(t), WithLogger(obs.Debug(&buf)), withClock(clk.Now))
+	p := newPipeline(t, det, newCache(t), WithLogger(obs.Debug(&buf)), withClock(clk.Now))
 	body := []byte(`{"model":"claude","messages":[{"role":"user","content":"email alice@example.com"}]}`)
 	ep := provider.Route("POST", "/v1/messages")
 
@@ -256,7 +276,7 @@ func TestRedactDebugCacheHitLogsNoInference(t *testing.T) {
 		spans: map[string][]pii.Span{a: {spanOf(a, "alice@example.com", pii.ClassEmail)}},
 	}
 	var buf bytes.Buffer
-	p := New(det, newCache(t), WithLogger(obs.Debug(&buf)), withClock(clk.Now))
+	p := newPipeline(t, det, newCache(t), WithLogger(obs.Debug(&buf)), withClock(clk.Now))
 	body := []byte(`{"model":"claude","messages":[{"role":"user","content":"` + a + `"},{"role":"user","content":"` + b + `"}]}`)
 	if _, _, err := p.Redact(context.Background(), provider.Route("POST", "/v1/messages"), body); err != nil {
 		t.Fatalf("redact: %v", err)
@@ -272,10 +292,121 @@ func TestRedactDebugCacheHitLogsNoInference(t *testing.T) {
 
 func TestRedactWithLoggerNilIsSafe(t *testing.T) {
 	det := &fakeDetector{spansFor: map[string][]pii.Span{}}
-	p := New(det, newCache(t), WithLogger(nil))
+	p := newPipeline(t, det, newCache(t), WithLogger(nil))
 	body := []byte(`{"model":"claude","messages":[{"role":"user","content":"hi"}]}`)
 	if _, _, err := p.Redact(context.Background(), provider.Route("POST", "/v1/messages"), body); err != nil {
 		t.Fatalf("nil logger must be safe: %v", err)
+	}
+}
+
+func TestRedactChunkedFieldSpansAtFieldOffsets(t *testing.T) {
+	text := strings.Repeat("a", 10) + "\n" + "bob@x.io 12345\n" + strings.Repeat("c", 10)
+	mid := "bob@x.io 12345\n"
+	det := &fakeDetector{spansFor: map[string][]pii.Span{
+		mid: {spanOf(mid, "bob@x.io", pii.ClassEmail)},
+	}}
+	p := newPipeline(t, det, newCache(t), withChunking(16, 4))
+	ep := provider.Route("POST", "/v1/messages")
+
+	out, m, err := p.Redact(context.Background(), ep, anthropicBody(t, text))
+	if err != nil {
+		t.Fatalf("redact: %v", err)
+	}
+	if len(det.calls) != 3 {
+		t.Fatalf("expected one detect call per chunk, got %d: %q", len(det.calls), det.calls)
+	}
+	if len(m) != 1 || m[0].From != "bob@x.io" {
+		t.Fatalf("mapping = %+v", m)
+	}
+	if strings.Contains(string(out), "bob@x.io") {
+		t.Errorf("value survived: %s", out)
+	}
+	if !strings.Contains(string(out), strings.Repeat("a", 10)) || !strings.Contains(string(out), "12345") {
+		t.Errorf("non-PII chunk text mangled: %s", out)
+	}
+}
+
+func TestRedactAppendOnlyReusesChunks(t *testing.T) {
+	base := strings.Repeat("a", 10) + "\n" + "bob@x.io 12345\n" + strings.Repeat("c", 10)
+	det := &fakeDetector{spansFor: map[string][]pii.Span{}}
+	p := newPipeline(t, det, newCache(t), withChunking(16, 4))
+	ep := provider.Route("POST", "/v1/messages")
+
+	if _, _, err := p.Redact(context.Background(), ep, anthropicBody(t, base)); err != nil {
+		t.Fatalf("first redact: %v", err)
+	}
+	first := len(det.calls)
+	if _, _, err := p.Redact(context.Background(), ep, anthropicBody(t, base+"XY")); err != nil {
+		t.Fatalf("second redact: %v", err)
+	}
+	added := det.calls[first:]
+	if len(added) != 1 || added[0] != strings.Repeat("c", 10)+"XY" {
+		t.Errorf("append must re-detect only the final chunk, got %q", added)
+	}
+}
+
+func TestRedactHardCutTruncationRedetected(t *testing.T) {
+	text := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN"
+	chunk0, chunk1 := text[0:16], text[12:28]
+	det := &fakeDetector{spansFor: map[string][]pii.Span{
+		chunk0: {{Start: 13, End: 16, Class: pii.ClassSecret}}, // "nop" truncated at the cut
+		chunk1: {{Start: 1, End: 4, Class: pii.ClassSecret}},   // "nop" whole inside the overlap
+	}}
+	p := newPipeline(t, det, newCache(t), withChunking(16, 4))
+	ep := provider.Route("POST", "/v1/messages")
+
+	_, m, err := p.Redact(context.Background(), ep, anthropicBody(t, text))
+	if err != nil {
+		t.Fatalf("redact: %v", err)
+	}
+	if len(m) != 1 || m[0].From != "nop" {
+		t.Fatalf("expected the overlap re-detection to win once, got %+v", m)
+	}
+}
+
+func TestRedactTinyFieldSkipsDetectorAndCache(t *testing.T) {
+	det := &fakeDetector{spansFor: map[string][]pii.Span{}}
+	cache := newCache(t)
+	p := newPipeline(t, det, cache)
+	if _, _, err := p.Redact(context.Background(), provider.Route("POST", "/v1/messages"), anthropicBody(t, "hi")); err != nil {
+		t.Fatalf("redact: %v", err)
+	}
+	if len(det.calls) != 0 {
+		t.Errorf("sub-minimum field reached detector: %q", det.calls)
+	}
+	if cache.Len() != 0 {
+		t.Errorf("sub-minimum field cached: %d entries", cache.Len())
+	}
+}
+
+func TestPlaceholderStableAcrossRequests(t *testing.T) {
+	text := "email alice@example.com"
+	det := &fakeDetector{spansFor: map[string][]pii.Span{
+		text: {spanOf(text, "alice@example.com", pii.ClassEmail)},
+	}}
+	p := newPipeline(t, det, newCache(t))
+	ep := provider.Route("POST", "/v1/messages")
+	body := anthropicBody(t, text)
+
+	_, m1, err := p.Redact(context.Background(), ep, body)
+	if err != nil {
+		t.Fatalf("first redact: %v", err)
+	}
+	_, m2, err := p.Redact(context.Background(), ep, body)
+	if err != nil {
+		t.Fatalf("second redact: %v", err)
+	}
+	if len(m1) != 1 || len(m2) != 1 || m1[0].To != m2[0].To {
+		t.Errorf("placeholder must be stable across requests: %+v vs %+v", m1, m2)
+	}
+
+	p2 := newPipeline(t, det, newCache(t))
+	_, m3, err := p2.Redact(context.Background(), ep, body)
+	if err != nil {
+		t.Fatalf("third redact: %v", err)
+	}
+	if len(m3) != 1 || m3[0].To == m1[0].To {
+		t.Errorf("distinct pipelines must use distinct nonces: %+v vs %+v", m1, m3)
 	}
 }
 
@@ -284,7 +415,7 @@ func TestRedactNoCache(t *testing.T) {
 	det := &fakeDetector{spansFor: map[string][]pii.Span{
 		usr: {spanOf(usr, "alice@example.com", pii.ClassEmail)},
 	}}
-	p := New(det, nil)
+	p := newPipeline(t, det, nil)
 	body := []byte(`{"model":"claude","messages":[{"role":"user","content":"email alice@example.com"}]}`)
 	ep := provider.Route("POST", "/v1/messages")
 	out, m, err := p.Redact(context.Background(), ep, body)

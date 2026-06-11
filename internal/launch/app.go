@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	cacheEntries = 1024
+	cacheEntries = 8192
 	tokenTTL     = 30 * 24 * time.Hour
 )
 
@@ -63,7 +63,11 @@ func (a *App) Main(ctx context.Context, kind provider.Kind, args []string) (int,
 		return 1, err
 	}
 	logger := obs.OrDiscard(a.Logger)
-	pipeline := redact.New(det, cache, redact.WithLogger(logger))
+	pipeline, err := redact.New(det, cache, redact.WithLogger(logger))
+	if err != nil {
+		//coverage:ignore reason=redact.New only fails when crypto/rand.Read fails, which it does not on supported platforms.
+		return 1, err
+	}
 
 	handler := func(upstreamBase string) http.Handler {
 		return proxy.New(proxy.Config{
