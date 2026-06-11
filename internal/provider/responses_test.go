@@ -139,7 +139,7 @@ func TestResponsesNoInput(t *testing.T) {
 }
 
 func TestResponsesNonMessageItemPassesThrough(t *testing.T) {
-	body := []byte(`{"model":"gpt","input":[{"type":"function_call","name":"f","arguments":"{}"},{"role":"user","content":"redact a@b.com"}]}`)
+	body := []byte(`{"model":"gpt","input":[{"type":"reasoning","encrypted_content":"gAAAA=="},{"type":"function_call","name":"f","arguments":"{}"},{"role":"user","content":"redact a@b.com"}]}`)
 	refs, reassemble, err := openAIResponsesExtract(body)
 	if err != nil {
 		t.Fatalf("extract: %v", err)
@@ -151,8 +151,82 @@ func TestResponsesNonMessageItemPassesThrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reassemble: %v", err)
 	}
-	if !strings.Contains(string(out), "function_call") {
-		t.Errorf("non-message item dropped: %s", out)
+	for _, frag := range []string{`{"type":"reasoning","encrypted_content":"gAAAA=="}`, `"arguments":"{}"`} {
+		if !strings.Contains(string(out), frag) {
+			t.Errorf("item %q not preserved: %s", frag, out)
+		}
+	}
+}
+
+func TestResponsesFunctionCallArguments(t *testing.T) {
+	body := []byte(`{"model":"gpt","input":[{"type":"function_call","call_id":"call_1","name":"read","arguments":"{\"path\":\"/Users/ali/id_rsa\"}"}]}`)
+	refs, reassemble, err := openAIResponsesExtract(body)
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if got := fieldTexts(refs); len(got) != 1 || got[0] != "/Users/ali/id_rsa" {
+		t.Fatalf("got %v", got)
+	}
+	refs[0].Set("OG_PRIVATE_URL_abc123")
+	out, err := reassemble()
+	if err != nil {
+		t.Fatalf("reassemble: %v", err)
+	}
+	if strings.Contains(string(out), "id_rsa") {
+		t.Errorf("original survived: %s", out)
+	}
+	for _, frag := range []string{`"call_id":"call_1"`, `"name":"read"`} {
+		if !strings.Contains(string(out), frag) {
+			t.Errorf("frame field %q lost: %s", frag, out)
+		}
+	}
+}
+
+func TestResponsesFunctionCallOutputString(t *testing.T) {
+	body := []byte(`{"model":"gpt","input":[{"type":"function_call_output","call_id":"call_1","output":"token ghp_abc123"}]}`)
+	refs, reassemble, err := openAIResponsesExtract(body)
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if got := fieldTexts(refs); len(got) != 1 || got[0] != "token ghp_abc123" {
+		t.Fatalf("got %v", got)
+	}
+	refs[0].Set("token OG_SECRET_ddd444")
+	out, err := reassemble()
+	if err != nil {
+		t.Fatalf("reassemble: %v", err)
+	}
+	if strings.Contains(string(out), "ghp_abc123") {
+		t.Errorf("original survived: %s", out)
+	}
+}
+
+func TestResponsesFunctionCallOutputParts(t *testing.T) {
+	body := []byte(`{"model":"gpt","input":[{"type":"function_call_output","call_id":"call_1","output":[{"type":"output_text","text":"reached bob@corp.com"},{"type":"input_image","image_url":"http://x"}]}]}`)
+	refs, _, err := openAIResponsesExtract(body)
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if got := fieldTexts(refs); len(got) != 1 || got[0] != "reached bob@corp.com" {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestResponsesCustomToolCall(t *testing.T) {
+	body := []byte(`{"model":"gpt","input":[{"type":"custom_tool_call","call_id":"call_1","name":"apply_patch","input":"*** Update File: /Users/ali/.netrc"},{"type":"custom_tool_call_output","call_id":"call_1","output":"patched /Users/ali/.netrc"}]}`)
+	refs, _, err := openAIResponsesExtract(body)
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	got := fieldTexts(refs)
+	want := map[string]bool{"*** Update File: /Users/ali/.netrc": true, "patched /Users/ali/.netrc": true}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for _, g := range got {
+		if !want[g] {
+			t.Errorf("unexpected field %q", g)
+		}
 	}
 }
 

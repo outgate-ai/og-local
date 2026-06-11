@@ -57,7 +57,8 @@ func extractInput(raw json.RawMessage) ([]FieldRef, func() json.RawMessage, erro
 		if err := json.Unmarshal(items[i], &item); err != nil {
 			return nil, nil, err
 		}
-		cRefs, cRebuild, err := extractContentFieldTypes(item["content"], responsesTextTypes)
+		key, extract := responsesItemField(item)
+		cRefs, cRebuild, err := extract(item[key])
 		if err != nil {
 			return nil, nil, err
 		}
@@ -68,7 +69,7 @@ func extractInput(raw json.RawMessage) ([]FieldRef, func() json.RawMessage, erro
 		}
 		refs = append(refs, cRefs...)
 		rebuilds[idx] = func() json.RawMessage {
-			item["content"] = cRebuild()
+			item[key] = cRebuild()
 			return mustMarshal(item)
 		}
 	}
@@ -80,4 +81,29 @@ func extractInput(raw json.RawMessage) ([]FieldRef, func() json.RawMessage, erro
 		return mustMarshal(out)
 	}
 	return refs, rebuild, nil
+}
+
+type fieldExtractor func(json.RawMessage) ([]FieldRef, func() json.RawMessage, error)
+
+// responsesItemField picks which field of an input item holds user-supplied
+// text. reasoning items stay untouched: their encrypted_content is
+// integrity-checked upstream.
+func responsesItemField(item map[string]json.RawMessage) (key string, extract fieldExtractor) {
+	typ := ""
+	if t, ok := item["type"]; ok {
+		_ = json.Unmarshal(t, &typ)
+	}
+	contentTypes := func(raw json.RawMessage) ([]FieldRef, func() json.RawMessage, error) {
+		return extractContentFieldTypes(raw, responsesTextTypes)
+	}
+	switch typ {
+	case "function_call":
+		return "arguments", extractArguments
+	case "custom_tool_call":
+		return "input", contentTypes
+	case "function_call_output", "custom_tool_call_output":
+		return "output", contentTypes
+	default:
+		return "content", contentTypes
+	}
 }

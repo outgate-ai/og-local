@@ -98,7 +98,7 @@ No daemon, no PID file, no global state.
 
 ## How it works 
 
-For each outbound request, `ogl` extracts the user-supplied content fields (`messages[].content`, `system`), runs the ONNX-based PII detector locally over each field independently, replaces detected spans with opaque placeholders (`OG_PRIVATE_EMAIL_<hex>`, `OG_SECRET_<hex>`, and the like), forwards the rewritten body upstream, and inverts the substitution on the response, including streaming responses where placeholders may split across SSE events. Request frame fields (`model`, `temperature`, tool schemas, ids) are passed through unchanged. The placeholder↔value mapping lives only for the duration of a single request — there is no persistent vault.
+For each outbound request, `ogl` extracts the user-supplied content fields (`messages[].content`, `system`, tool-call inputs, and tool results), runs the ONNX-based PII detector locally over each field independently, replaces detected spans with opaque placeholders (`OG_PRIVATE_EMAIL_<hex>`, `OG_SECRET_<hex>`, and the like), forwards the rewritten body upstream, and inverts the substitution on the response, including streaming responses where placeholders may split across SSE events. Request frame fields (`model`, `temperature`, tool schemas, ids) are passed through unchanged. The placeholder↔value mapping lives only for the duration of a single request — there is no persistent vault.
 
 ## Supported providers
 

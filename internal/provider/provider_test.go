@@ -114,6 +114,163 @@ func TestAnthropicSystemBlocks(t *testing.T) {
 	}
 }
 
+func TestAnthropicToolResultStringContent(t *testing.T) {
+	body := []byte(`{"model":"claude","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","is_error":true,"content":"fatal: bob@corp.com not found"}]}]}`)
+	refs, reassemble, err := anthropicExtract(body)
+	if err != nil {
+		t.Fatalf("Fields: %v", err)
+	}
+	if got := fieldTexts(refs); len(got) != 1 || got[0] != "fatal: bob@corp.com not found" {
+		t.Fatalf("got %v", got)
+	}
+	refs[0].Set("fatal: OG_PRIVATE_EMAIL_abc123 not found")
+	out, err := reassemble()
+	if err != nil {
+		t.Fatalf("reassemble: %v", err)
+	}
+	if strings.Contains(string(out), "bob@corp.com") {
+		t.Errorf("original survived: %s", out)
+	}
+	for _, frag := range []string{`"tool_use_id":"toolu_1"`, `"is_error":true`} {
+		if !strings.Contains(string(out), frag) {
+			t.Errorf("frame field %q lost: %s", frag, out)
+		}
+	}
+}
+
+func TestAnthropicToolResultBlockContent(t *testing.T) {
+	body := []byte(`{"model":"claude","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":[{"type":"text","text":"key sk-abc123"},{"type":"image","source":{"data":"AAAA"}}]}]}]}`)
+	refs, reassemble, err := anthropicExtract(body)
+	if err != nil {
+		t.Fatalf("Fields: %v", err)
+	}
+	if got := fieldTexts(refs); len(got) != 1 || got[0] != "key sk-abc123" {
+		t.Fatalf("got %v", got)
+	}
+	refs[0].Set("key OG_SECRET_eee999")
+	out, err := reassemble()
+	if err != nil {
+		t.Fatalf("reassemble: %v", err)
+	}
+	if strings.Contains(string(out), "sk-abc123") {
+		t.Errorf("original survived: %s", out)
+	}
+	if !strings.Contains(string(out), "AAAA") {
+		t.Errorf("image block dropped: %s", out)
+	}
+}
+
+func TestAnthropicToolUseInput(t *testing.T) {
+	body := []byte(`{"model":"claude","messages":[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"bash","input":{"command":"ssh ali@10.0.0.7","timeout":30}}]}]}`)
+	refs, reassemble, err := anthropicExtract(body)
+	if err != nil {
+		t.Fatalf("Fields: %v", err)
+	}
+	if got := fieldTexts(refs); len(got) != 1 || got[0] != "ssh ali@10.0.0.7" {
+		t.Fatalf("got %v", got)
+	}
+	refs[0].Set("ssh OG_PRIVATE_EMAIL_fff000")
+	out, err := reassemble()
+	if err != nil {
+		t.Fatalf("reassemble: %v", err)
+	}
+	if strings.Contains(string(out), "ali@10.0.0.7") {
+		t.Errorf("original survived: %s", out)
+	}
+	for _, frag := range []string{`"id":"toolu_1"`, `"name":"bash"`, `"timeout":30`} {
+		if !strings.Contains(string(out), frag) {
+			t.Errorf("frame field %q lost: %s", frag, out)
+		}
+	}
+}
+
+func TestAnthropicToolUseEmptyInputPassesThrough(t *testing.T) {
+	body := []byte(`{"model":"claude","messages":[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"ls","input":{}}]}]}`)
+	refs, reassemble, err := anthropicExtract(body)
+	if err != nil {
+		t.Fatalf("Fields: %v", err)
+	}
+	if len(refs) != 0 {
+		t.Fatalf("got %v, want none", fieldTexts(refs))
+	}
+	out, err := reassemble()
+	if err != nil {
+		t.Fatalf("reassemble: %v", err)
+	}
+	if !strings.Contains(string(out), `"input":{}`) {
+		t.Errorf("tool_use block changed: %s", out)
+	}
+}
+
+func TestAnthropicThinkingBlockUntouched(t *testing.T) {
+	block := `{"type":"thinking","thinking":"user is bob@corp.com","signature":"sig=="}`
+	body := []byte(`{"model":"claude","messages":[{"role":"assistant","content":[` + block + `]}]}`)
+	refs, reassemble, err := anthropicExtract(body)
+	if err != nil {
+		t.Fatalf("Fields: %v", err)
+	}
+	if len(refs) != 0 {
+		t.Fatalf("thinking text must not be extracted, got %v", fieldTexts(refs))
+	}
+	out, err := reassemble()
+	if err != nil {
+		t.Fatalf("reassemble: %v", err)
+	}
+	if !strings.Contains(string(out), block) {
+		t.Errorf("thinking block not byte-identical: %s", out)
+	}
+}
+
+func TestOpenAIChatToolCallArguments(t *testing.T) {
+	body := []byte(`{"model":"gpt","messages":[{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"run","arguments":"{\"cmd\":\"curl http://10.0.0.7/admin\"}"}}]},{"role":"tool","tool_call_id":"call_1","content":"done"}]}`)
+	refs, reassemble, err := openAIChatExtract(body)
+	if err != nil {
+		t.Fatalf("Fields: %v", err)
+	}
+	got := fieldTexts(refs)
+	want := map[string]bool{"curl http://10.0.0.7/admin": true, "done": true}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for _, g := range got {
+		if !want[g] {
+			t.Errorf("unexpected field %q", g)
+		}
+	}
+	for _, r := range refs {
+		if r.Text == "curl http://10.0.0.7/admin" {
+			r.Set("curl OG_PRIVATE_URL_aaa111")
+		}
+	}
+	out, err := reassemble()
+	if err != nil {
+		t.Fatalf("reassemble: %v", err)
+	}
+	if strings.Contains(string(out), "10.0.0.7") {
+		t.Errorf("original survived: %s", out)
+	}
+	for _, frag := range []string{`"id":"call_1"`, `"name":"run"`} {
+		if !strings.Contains(string(out), frag) {
+			t.Errorf("frame field %q lost: %s", frag, out)
+		}
+	}
+	var env map[string]json.RawMessage
+	if err := json.Unmarshal(out, &env); err != nil {
+		t.Fatalf("rebuilt body invalid: %v", err)
+	}
+}
+
+func TestOpenAIChatLegacyFunctionCall(t *testing.T) {
+	body := []byte(`{"model":"gpt","messages":[{"role":"assistant","function_call":{"name":"run","arguments":"{\"path\":\"/Users/ali/secrets.env\"}"}}]}`)
+	refs, _, err := openAIChatExtract(body)
+	if err != nil {
+		t.Fatalf("Fields: %v", err)
+	}
+	if got := fieldTexts(refs); len(got) != 1 || got[0] != "/Users/ali/secrets.env" {
+		t.Fatalf("got %v", got)
+	}
+}
+
 func TestOpenAIChatExtract(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.1","temperature":0.7,"messages":[{"role":"system","content":"be terse"},{"role":"user","content":"call me at 415-555-0100"}]}`)
 	ep := Route("POST", "/v1/chat/completions")
@@ -209,6 +366,32 @@ func TestExtractInvalidJSON(t *testing.T) {
 			if _, _, err := ex(b); err == nil {
 				t.Errorf("expected error on %s", b)
 			}
+		}
+	}
+}
+
+func TestAnthropicBadToolBlocks(t *testing.T) {
+	cases := [][]byte{
+		[]byte(`{"messages":[{"content":[{"type":"tool_result","content":[{"type":"text","text":7}]}]}]}`),
+		[]byte(`{"messages":[{"content":[{"type":"tool_result","content":["notblock"]}]}]}`),
+	}
+	for _, b := range cases {
+		if _, _, err := anthropicExtract(b); err == nil {
+			t.Errorf("expected error on %s", b)
+		}
+	}
+}
+
+func TestOpenAIChatBadToolCalls(t *testing.T) {
+	cases := [][]byte{
+		[]byte(`{"messages":[{"role":"assistant","tool_calls":"notarray"}]}`),
+		[]byte(`{"messages":[{"role":"assistant","tool_calls":[42]}]}`),
+		[]byte(`{"messages":[{"role":"assistant","tool_calls":[{"function":"notobject"}]}]}`),
+		[]byte(`{"messages":[{"role":"assistant","function_call":42}]}`),
+	}
+	for _, b := range cases {
+		if _, _, err := openAIChatExtract(b); err == nil {
+			t.Errorf("expected error on %s", b)
 		}
 	}
 }
