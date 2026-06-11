@@ -40,15 +40,6 @@ func (r *recordingRunner) Run(_ context.Context, argv, env []string, _ Stdio) (i
 	return r.exitCode, r.runErr
 }
 
-func envValue(environ []string, key string) string {
-	for _, kv := range environ {
-		if strings.HasPrefix(kv, key+"=") {
-			return strings.TrimPrefix(kv, key+"=")
-		}
-	}
-	return ""
-}
-
 func okHandler() HandlerFunc {
 	return func(_ string) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })

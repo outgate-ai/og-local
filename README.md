@@ -122,6 +122,7 @@ For each outbound request, `ogl` extracts the user-supplied content fields (`mes
 
 | Variable | Purpose |
 |---|---|
+| `OGL_CLAUDE_BIN` / `OGL_CODEX_BIN` | Absolute path to the agent binary, for hosts that spawn `ogl` without your shell PATH. Normally unnecessary: on a PATH miss, `ogl` asks your login shell where the agent lives |
 | `OGL_CACHE_DIR` | Override the model + runtime cache directory (default: `~/.cache/og-local`) |
 | `OGL_DEBUG` | `1` logs proxy activity to a file (no PII values); a path chooses the file. The path is printed at startup |
 | `OGL_ONNXRUNTIME_LIB` | Path to the ONNX Runtime shared library, overriding the default cache lookup |
