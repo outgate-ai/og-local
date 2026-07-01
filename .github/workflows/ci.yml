@@ -151,7 +151,7 @@ jobs:
           done
           unzip -l dist/ogl_*_windows_amd64.zip | grep -q 'ogl.exe'
           unzip -l dist/ogl_*_windows_amd64.zip | grep -q 'lib/onnxruntime.dll'
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-onnx-zip
           path: dist/ogl_*_windows_amd64.zip

@@ -49,7 +49,7 @@ jobs:
           for t in ${{ matrix.onnx_targets }} ${{ matrix.stub_targets }}; do
             ./scripts/build-release.sh "$t"
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist-${{ strategy.job-index }}
           path: dist/ogl_*
