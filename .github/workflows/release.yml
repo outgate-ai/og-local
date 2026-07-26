@@ -37,7 +37,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y g++-aarch64-linux-gnu gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
       - name: Cache windows tokenizers staticlib
         if: runner.os == 'Linux'
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: native/windows-amd64/libtokenizers.a
           key: tokenizers-${{ env.TOKENIZERS_VERSION }}-x86_64-pc-windows-gnu
