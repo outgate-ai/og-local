@@ -31,6 +31,7 @@ Commands:
                       (default model: openai/privacy-filter)
   model list          List catalog models and their cache status
   model delete <name> Remove a cached model from disk
+  serve [flags]       Run the OG OS gate on a unix socket (see 'ogl serve -h')
   version             Print build information
   help                Print this help
 
@@ -68,6 +69,8 @@ func main() {
 		os.Exit(runModel(args[1:]))
 	case "detect-bench":
 		os.Exit(runDetectBench(args[1:]))
+	case "serve":
+		os.Exit(runServe(args[1:]))
 	case "claude":
 		os.Exit(runAgent(provider.Anthropic, "claude", args[1:], nil))
 	case "codex":
