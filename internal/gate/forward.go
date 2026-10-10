@@ -80,6 +80,11 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 	}
 	dest, err := s.router.Resolve(req.Source.RegionID, req.URL, req.Path, query)
 	if err != nil {
+		if u, perr := url.Parse(req.URL); perr == nil {
+			row.Destination, row.PathClass = u.Hostname(), route.PathClass(u.Path)
+		} else {
+			row.PathClass = route.PathClass(req.Path)
+		}
 		reason := "destination_not_allowed"
 		status := 403
 		if errors.Is(err, route.ErrUnknownRegion) {

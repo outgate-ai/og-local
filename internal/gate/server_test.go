@@ -60,6 +60,11 @@ func newUpstream(t *testing.T) *upstream {
 	return u
 }
 
+func mustHost(raw string) string {
+	u, _ := url.Parse(raw)
+	return u.Hostname()
+}
+
 func portOf(raw string) string {
 	p, _ := url.Parse(raw)
 	return p.Port()
@@ -215,8 +220,12 @@ func TestRefusesHostsOutsideTheAllowlist(t *testing.T) {
 		if resp["refused"] != "destination_not_allowed" && resp["refused"] != "bad_url" {
 			t.Errorf("%s: %v", u, resp)
 		}
-		if row := h.rows.last(t); !row.Blocked {
+		row := h.rows.last(t)
+		if !row.Blocked {
 			t.Errorf("%s: row not blocked: %+v", u, row)
+		}
+		if want := mustHost(u); row.Destination != want {
+			t.Errorf("%s: destination %q, want %q", u, row.Destination, want)
 		}
 	}
 	resp := h.call(fmt.Sprintf(`{"source":{"adapter":"chat"},"method":"GET","url":"%s/redirect","egress":{}}`, h.up.srv.URL))
