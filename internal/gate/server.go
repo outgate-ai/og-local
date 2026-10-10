@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/outgate-ai/og-local/internal/gate/ledger"
@@ -128,7 +129,8 @@ func (s *Server) handle(ctx context.Context, c *net.UnixConn) {
 	}
 	class := s.classify(cred)
 	_ = c.SetReadDeadline(time.Now().Add(30 * time.Second))
-	req, err := wire.ReadRequest(c)
+	req, fds, err := wire.ReadRequestFDs(c)
+	defer closeFDs(fds)
 	if err != nil {
 		if class != "" {
 			_ = wire.WriteResponse(c, wire.Refuse("", 400, "bad_request", err.Error()))
@@ -142,7 +144,7 @@ func (s *Server) handle(ctx context.Context, c *net.UnixConn) {
 		s.log.Warn("caller refused", "uid", cred.UID, "domain", cred.Domain())
 		resp = wire.Refuse(req.ID, 403, "caller_not_allowed", "")
 	case req.Op == "":
-		resp = s.forward(ctx, class, cred, req)
+		resp = s.forward(ctx, class, cred, req, fds)
 	case req.Op == "health":
 		resp = s.healthResponse(class)
 	case req.Op == "ledger" && class == "debug":
@@ -214,4 +216,10 @@ func jsonResponse(status int, v any) *wire.Response {
 		return wire.Refuse("", 500, "internal", err.Error())
 	}
 	return &wire.Response{Status: status, Body: b}
+}
+
+func closeFDs(fds []int) {
+	for _, fd := range fds {
+		_ = syscall.Close(fd)
+	}
 }

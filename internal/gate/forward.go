@@ -17,7 +17,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -41,7 +43,7 @@ var requestHeaders = map[string]bool{
 
 var responseHeaders = []string{"Content-Type", "Retry-After", "Etag", "Location", "Www-Authenticate", "X-Request-Id", "Date"}
 
-func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req *wire.Request) *wire.Response {
+func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req *wire.Request, fds []int) *wire.Response {
 	start := time.Now()
 	method := strings.ToUpper(req.Method)
 	if method == "" {
@@ -107,7 +109,7 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 	}
 	row.Kind = coreKind(req.Egress.Kind, method, row.PathClass, row.OnDevice)
 
-	body, ctype, err := s.requestBody(req)
+	body, ctype, err := s.requestBody(req, fds)
 	if err != nil {
 		return refuse(400, "bad_body", err.Error())
 	}
@@ -209,9 +211,9 @@ func isEmptyJSON(b []byte) bool {
 }
 
 // requestBody builds the bytes to send and their content type.
-func (s *Server) requestBody(req *wire.Request) (body []byte, contentType string, err error) {
+func (s *Server) requestBody(req *wire.Request, fds []int) (body []byte, contentType string, err error) {
 	if req.File != "" {
-		return s.multipartBody(req)
+		return s.multipartBody(req, fds)
 	}
 	switch {
 	case req.BodyText != nil:
@@ -231,14 +233,10 @@ func (s *Server) requestBody(req *wire.Request) (body []byte, contentType string
 	return nil, "", nil
 }
 
-func (s *Server) multipartBody(req *wire.Request) (body []byte, contentType string, err error) {
-	path, err := s.uploadPath(req.File)
+func (s *Server) multipartBody(req *wire.Request, fds []int) (body []byte, contentType string, err error) {
+	path, data, err := s.uploadFile(req.File, fds)
 	if err != nil {
 		return nil, "", err
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, "", fmt.Errorf("upload file: %w", err)
 	}
 	var fields map[string]any
 	if len(req.Body) > 0 && string(req.Body) != "null" {
@@ -280,6 +278,65 @@ func (s *Server) multipartBody(req *wire.Request) (body []byte, contentType stri
 		return nil, "", err
 	}
 	return buf.Bytes(), w.FormDataContentType(), nil
+}
+
+// maxUpload bounds one uploaded file (screenshots are a few MB).
+const maxUpload = 32 << 20
+
+// uploadFile reads the file a request uploads: "fd:<n>" is the n-th descriptor
+// passed with the request (SCM_RIGHTS); a path must name a regular file directly
+// under an upload dir. The name is what the upstream sees as the filename.
+func (s *Server) uploadFile(ref string, fds []int) (name string, data []byte, err error) {
+	if n, ok := strings.CutPrefix(ref, "fd:"); ok {
+		i, err := strconv.Atoi(n)
+		if err != nil || i < 0 || i >= len(fds) {
+			return "", nil, errors.New("upload descriptor missing")
+		}
+		// A dup, so the *os.File owns its own descriptor; the passed one is closed with the request.
+		dup, err := syscall.Dup(fds[i])
+		if err != nil {
+			return "", nil, errors.New("upload descriptor unusable")
+		}
+		f := os.NewFile(uintptr(dup), "upload")
+		defer func() { _ = f.Close() }()
+		var st os.FileInfo
+		if st, err = f.Stat(); err != nil || !st.Mode().IsRegular() {
+			return "", nil, errors.New("upload descriptor is not a regular file")
+		}
+		data, err = io.ReadAll(io.LimitReader(f, maxUpload+1))
+		if err != nil || len(data) > maxUpload {
+			return "", nil, errors.New("upload unreadable or too large")
+		}
+		name = "upload"
+		if ext := sniffExt(data); ext != "" {
+			name += ext
+		}
+		return name, data, nil
+	}
+	path, err := s.uploadPath(ref)
+	if err != nil {
+		return "", nil, err
+	}
+	data, err = os.ReadFile(path)
+	if err != nil {
+		return "", nil, fmt.Errorf("upload file: %w", err)
+	}
+	if len(data) > maxUpload {
+		return "", nil, errors.New("upload too large")
+	}
+	return path, data, nil
+}
+
+func sniffExt(data []byte) string {
+	switch http.DetectContentType(data) {
+	case "image/png":
+		return ".png"
+	case "image/jpeg":
+		return ".jpg"
+	case "image/webp":
+		return ".webp"
+	}
+	return ""
 }
 
 // uploadPath admits only regular files directly under a configured upload dir.

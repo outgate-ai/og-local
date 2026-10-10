@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -165,6 +166,27 @@ func (h *harness) call(line string) map[string]any {
 	}
 	defer func() { _ = c.Close() }()
 	if _, err := io.WriteString(c, line+"\n"); err != nil {
+		h.t.Fatal(err)
+	}
+	out, err := bufio.NewReader(c).ReadString('\n')
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(out), &m); err != nil {
+		h.t.Fatalf("bad response %q: %v", out, err)
+	}
+	return m
+}
+
+func (h *harness) callFD(line string, fd int) map[string]any {
+	h.t.Helper()
+	c, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: h.sock, Net: "unix"})
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	if _, _, err := c.WriteMsgUnix([]byte(line+"\n"), syscall.UnixRights(fd), nil); err != nil {
 		h.t.Fatal(err)
 	}
 	out, err := bufio.NewReader(c).ReadString('\n')
@@ -367,6 +389,26 @@ func TestUploadMultipart(t *testing.T) {
 	resp = h.call(`{"source":{"region_id":"global","adapter":"devq"},"method":"POST","path":"/x","file":"/etc/hosts","egress":{"kind":"upload"}}`)
 	if resp["refused"] != "bad_body" {
 		t.Errorf("file outside upload dirs: %v", resp)
+	}
+
+	// The same upload with the file passed as a descriptor (SCM_RIGHTS), from anywhere.
+	other := filepath.Join(h.dir, "elsewhere.png")
+	_ = os.WriteFile(other, []byte("\x89PNG\r\n\x1a\n synthetic"), 0o600)
+	f, err := os.Open(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	resp = h.callFD(`{"source":{"region_id":"global","adapter":"devq"},"method":"POST","path":"/api/v1/agents/devices/d1/uploads","body":{"lane_id":"ln_2"},"file":"fd:0","egress":{"kind":"upload"}}`, int(f.Fd()))
+	if resp["status"].(float64) != 200 {
+		t.Fatalf("fd upload: %v", resp)
+	}
+	if got := h.up.last(); !strings.Contains(got.Body, "synthetic") || !strings.Contains(got.Body, `filename="upload.png"`) {
+		t.Errorf("fd upload body = %q", got.Body)
+	}
+	resp = h.call(`{"source":{"region_id":"global","adapter":"devq"},"method":"POST","path":"/x","file":"fd:0","egress":{"kind":"upload"}}`)
+	if resp["refused"] != "bad_body" {
+		t.Errorf("missing descriptor: %v", resp)
 	}
 }
 
