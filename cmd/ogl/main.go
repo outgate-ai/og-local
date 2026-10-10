@@ -66,6 +66,8 @@ func main() {
 		printUsage(os.Stdout)
 	case "model":
 		os.Exit(runModel(args[1:]))
+	case "detect-bench":
+		os.Exit(runDetectBench(args[1:]))
 	case "claude":
 		os.Exit(runAgent(provider.Anthropic, "claude", args[1:], nil))
 	case "codex":

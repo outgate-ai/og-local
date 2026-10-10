@@ -8,7 +8,7 @@ import (
 	"github.com/outgate-ai/og-local/internal/pii/onnx"
 )
 
-func newDetector(cfg Config) (pii.Detector, func() error, error) {
+func newDetector(cfg Config) (pii.Detector, func() error, error) { //nolint:gocritic // see detector.New
 	model := models.Default()
 	if cfg.ModelName != "" {
 		m, ok := models.Lookup(cfg.ModelName)
@@ -30,7 +30,8 @@ func newDetector(cfg Config) (pii.Detector, func() error, error) {
 		return nil, nil, err
 	}
 
-	det, err := onnx.New(dir, lib)
+	det, err := onnx.New(dir, lib, onnx.WithThreads(cfg.Threads), onnx.WithModelFile(cfg.ModelFile),
+		onnx.WithOptimizedModelPath(cfg.OptimizedPath), onnx.WithProfiling(cfg.ProfilePrefix))
 	if err != nil {
 		return nil, nil, err
 	}

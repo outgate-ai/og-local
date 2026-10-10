@@ -14,10 +14,17 @@ var (
 type Config struct {
 	ModelName string
 	LibPath   string
+	// Threads caps the detector's intra-op threads; 0 keeps the runtime default.
+	Threads int
+	// ModelFile, OptimizedPath and ProfilePrefix are onnx.WithModelFile,
+	// WithOptimizedModelPath and WithProfiling; empty keeps the defaults.
+	ModelFile     string
+	OptimizedPath string
+	ProfilePrefix string
 }
 
 // New returns the PII detector and its close function; the pure-Go build
 // returns ErrUnavailable.
-func New(cfg Config) (pii.Detector, func() error, error) {
+func New(cfg Config) (pii.Detector, func() error, error) { //nolint:gocritic // a value Config keeps call sites literal
 	return newDetector(cfg)
 }

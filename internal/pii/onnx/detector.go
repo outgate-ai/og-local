@@ -28,7 +28,44 @@ type Detector struct {
 	mu         sync.Mutex
 }
 
-func New(modelDir, libPath string) (*Detector, error) {
+// Option tunes the ONNX session.
+type Option func(*settings)
+
+type settings struct {
+	intraOpThreads int
+	modelFile      string
+	optimizedPath  string
+	profilePrefix  string
+}
+
+// WithThreads caps the session's intra-op thread pool; 0 keeps the runtime
+// default (one thread per physical core).
+func WithThreads(n int) Option {
+	return func(s *settings) { s.intraOpThreads = n }
+}
+
+// WithModelFile picks another graph of the model repo, relative to its
+// directory (default onnx/model_q4f16.onnx).
+func WithModelFile(rel string) Option {
+	return func(s *settings) { s.modelFile = rel }
+}
+
+// WithOptimizedModelPath makes the runtime write its optimised graph there, so a
+// later session can load it without optimising again.
+func WithOptimizedModelPath(path string) Option {
+	return func(s *settings) { s.optimizedPath = path }
+}
+
+// WithProfiling writes the runtime's per-node profile to <prefix>_<time>.json.
+func WithProfiling(prefix string) Option {
+	return func(s *settings) { s.profilePrefix = prefix }
+}
+
+func New(modelDir, libPath string, opts ...Option) (*Detector, error) {
+	var cfg settings
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 	var initErr error
 	initOnce.Do(func() {
 		ort.SetSharedLibraryPath(libPath)
@@ -53,6 +90,9 @@ func New(modelDir, libPath string) (*Detector, error) {
 	}
 
 	modelPath := filepath.Join(modelDir, "onnx", "model_q4f16.onnx")
+	if cfg.modelFile != "" {
+		modelPath = filepath.Join(modelDir, cfg.modelFile)
+	}
 	inInfo, outInfo, err := ort.GetInputOutputInfo(modelPath)
 	if err != nil {
 		tok.close()
@@ -61,7 +101,15 @@ func New(modelDir, libPath string) (*Detector, error) {
 	inputNames := pickInputs(inInfo)
 	outputName := outInfo[0].Name
 
-	session, err := ort.NewDynamicAdvancedSession(modelPath, inputNames, []string{outputName}, nil)
+	so, err := sessionOptions(cfg)
+	if err != nil {
+		tok.close()
+		return nil, err
+	}
+	session, err := ort.NewDynamicAdvancedSession(modelPath, inputNames, []string{outputName}, so)
+	if so != nil {
+		_ = so.Destroy()
+	}
 	if err != nil {
 		tok.close()
 		return nil, fmt.Errorf("onnx: new session: %w", err)
@@ -74,6 +122,39 @@ func New(modelDir, libPath string) (*Detector, error) {
 		inputNames: inputNames,
 		numLabels:  len(id2label),
 	}, nil
+}
+
+func sessionOptions(cfg settings) (*ort.SessionOptions, error) {
+	if cfg.intraOpThreads <= 0 && cfg.optimizedPath == "" && cfg.profilePrefix == "" {
+		return nil, nil
+	}
+	so, err := ort.NewSessionOptions()
+	if err != nil {
+		return nil, fmt.Errorf("onnx: session options: %w", err)
+	}
+	fail := func(what string, err error) (*ort.SessionOptions, error) {
+		_ = so.Destroy()
+		return nil, fmt.Errorf("onnx: %s: %w", what, err)
+	}
+	if cfg.intraOpThreads > 0 {
+		if err := so.SetIntraOpNumThreads(cfg.intraOpThreads); err != nil {
+			return fail("intra-op threads", err)
+		}
+		if err := so.SetInterOpNumThreads(1); err != nil {
+			return fail("inter-op threads", err)
+		}
+	}
+	if cfg.optimizedPath != "" {
+		if err := so.SetOptimizedModelFilePath(cfg.optimizedPath); err != nil {
+			return fail("optimized model path", err)
+		}
+	}
+	if cfg.profilePrefix != "" {
+		if err := so.EnableProfiling(cfg.profilePrefix); err != nil {
+			return fail("profiling", err)
+		}
+	}
+	return so, nil
 }
 
 func (d *Detector) Close() {
@@ -197,4 +278,10 @@ func readBiases(path string) (pii.TransitionBiases, error) {
 		return pii.TransitionBiases{}, fmt.Errorf("onnx: read calibration: %w", err)
 	}
 	return pii.ParseBiases(data, "default")
+}
+
+// CountTokens reports how many tokens the model sees for text.
+func (d *Detector) CountTokens(text string) int {
+	ids, _ := d.tok.encode(text)
+	return len(ids)
 }
