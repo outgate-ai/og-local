@@ -314,6 +314,14 @@ func TestAppqTenancyTokenInjected(t *testing.T) {
 	if resp["status"].(float64) != 200 || h.up.last().Query != "hook=events" {
 		t.Errorf("hook fire: %v %+v", resp, h.up.last())
 	}
+
+	uid := uint32(os.Getuid()) //nolint:gosec // uids fit uint32
+	h.srv.cfg.Callers = []CallerRule{{UID: &uid, Class: "chat"}}
+	n := len(h.up.got)
+	resp = h.call(`{"source":{"region_id":"appq:travel","adapter":"chat"},"method":"POST","path":"/commands/pop","body":{},"egress":{"kind":"poll"}}`)
+	if resp["refused"] != "destination_not_allowed" || len(h.up.got) != n {
+		t.Errorf("chat used the agent's tenancy: %v", resp)
+	}
 }
 
 func TestUploadMultipart(t *testing.T) {

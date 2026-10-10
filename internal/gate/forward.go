@@ -70,6 +70,10 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 		return refuse(400, "bad_method", method)
 	}
 
+	// App tenancies carry a join token only the gate holds: og-agentd's bring-up only.
+	if strings.HasPrefix(req.Source.RegionID, "appq:") && class != "agent" && class != "debug" {
+		return refuse(403, "destination_not_allowed", "app tenancies are for the agent runtime")
+	}
 	query, err := queryValues(req.Query)
 	if err != nil {
 		return refuse(400, "bad_query", err.Error())
