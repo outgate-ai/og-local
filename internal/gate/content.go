@@ -52,7 +52,22 @@ type Call struct {
 	Path    string
 	Kind    string
 	Content bool
+	// ContentType is the request body's type; Binary is set for uploads and
+	// base64 bodies, whose bytes are Raw.
+	ContentType string
+	Binary      bool
+	Raw         []byte
+	// Approved: the request names an approval OG Core confirmed (uploads, step 7).
+	Approved bool
+	// RespContentType is the upstream response's type, set before Restore.
+	RespContentType string
 }
+
+// Refusal reasons a Masker may return (errors.Is), mapped onto refused codes.
+var (
+	ErrNeedsApproval = errors.New("needs_approval")
+	ErrStorageLocked = errors.New("storage_locked")
+)
 
 // egressKinds without user content: they pass even when content can't be masked.
 var contentFree = map[string]bool{"poll": true, "presence": true, "token": true, "control": true}

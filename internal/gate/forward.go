@@ -113,7 +113,10 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 	if err != nil {
 		return refuse(400, "bad_body", err.Error())
 	}
-	call := &Call{Caller: class, Req: req, Path: row.PathClass, Kind: row.Kind}
+	call := &Call{
+		Caller: class, Req: req, Path: row.PathClass, Kind: row.Kind, ContentType: ctype,
+		Binary: req.File != "" || req.BodyB64 != "", Raw: body,
+	}
 	call.Content = len(body) > 0 && !contentFree[req.Egress.Kind] && !s.isOIDC(dest) && !isEmptyJSON(body)
 	row.Content = call.Content
 	row.BytesOutRaw = int64(len(body))
@@ -123,11 +126,17 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 		var m wire.Masked
 		sent, m, err = s.masker.Mask(ctx, call, body)
 		if err != nil {
-			reason := "mask_failed"
-			if errors.Is(err, ErrDetectorUnavailable) {
+			status, reason := 503, "mask_failed"
+			switch {
+			case errors.Is(err, ErrDetectorUnavailable):
 				reason = ErrDetectorUnavailable.Error()
+			case errors.Is(err, ErrStorageLocked):
+				reason = ErrStorageLocked.Error()
+			case errors.Is(err, ErrNeedsApproval):
+				status, reason = 403, ErrNeedsApproval.Error()
 			}
-			return refuse(503, reason, err.Error())
+			s.log.Info("content refused", "reason", reason, "err", err)
+			return refuse(status, reason, err.Error())
 		}
 		row.MaskedCount, row.MaskedCategories = m.Count, m.Categories
 		if m.Blocked > 0 && len(sent) == 0 {
@@ -173,6 +182,7 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 			s.log.Info("region hosts learned", "count", n, "env", dest.Env)
 		}
 	}
+	call.RespContentType = hresp.Header.Get("Content-Type")
 	restored, fields := s.masker.Restore(ctx, call, data)
 	row.RestoredCount = len(fields)
 	out := encodeBody(hresp.Header.Get("Content-Type"), restored)

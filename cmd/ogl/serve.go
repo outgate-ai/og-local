@@ -10,10 +10,14 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
+	"github.com/outgate-ai/og-local/internal/detector"
 	"github.com/outgate-ai/og-local/internal/gate"
 	"github.com/outgate-ai/og-local/internal/gate/alog"
+	"github.com/outgate-ai/og-local/internal/gate/mask"
 	"github.com/outgate-ai/og-local/internal/gate/sysprop"
+	"github.com/outgate-ai/og-local/internal/pii"
 )
 
 const serveUsage = `Usage:
@@ -36,6 +40,8 @@ func runServe(args []string) int {
 	modelSocket := fs.String("model-socket", "og_gate_model", "init socket name for the on-device model front")
 	modelListen := fs.String("model-listen", "", "bind this socket path for the on-device model front")
 	mode := fs.String("mode", "", "passthrough or mask")
+	ceDir := fs.String("ce-dir", "/data/misc_ce/0/outgate-gate", "credential-encrypted dir for the placeholder map")
+	model := fs.String("model", "openai/privacy-filter-q4", "detector model (og-local catalog name)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -61,7 +67,16 @@ func runServe(args []string) int {
 	}
 	cfg.Mode = m
 
-	srv, err := gate.New(&cfg, gate.Options{Logger: log})
+	opts := gate.Options{Logger: log}
+	if cfg.Mode == gate.Mask {
+		m := newMasker(*ceDir, *model, log)
+		defer m.Detector.Close()
+		opts.Masker = m
+		opts.Health = func() map[string]any {
+			return map[string]any{"detector": m.Detector.Stats(), "map": mapHealth(m)}
+		}
+	}
+	srv, err := gate.New(&cfg, opts)
 	if err != nil {
 		log.Error("start", "err", err)
 		return 1
@@ -93,6 +108,34 @@ func runServe(args []string) int {
 		}
 		return 0
 	}
+}
+
+// newMasker builds the content layer: the placeholder map in credential-encrypted
+// storage (30 days) and the detector, loaded on first use and unloaded when idle.
+func newMasker(ceDir, model string, log *slog.Logger) *mask.Masker {
+	threads := sysprop.Int("persist.outgate.gate.threads", 4)
+	idle := time.Duration(sysprop.Int("persist.outgate.gate.detector_idle_seconds", 600)) * time.Second
+	load := func() (pii.Detector, func() error, error) {
+		start := time.Now()
+		d, closeFn, err := detector.New(detector.Config{ModelName: model, LibPath: os.Getenv("OGL_ONNXRUNTIME_LIB"), Threads: threads})
+		if err != nil {
+			log.Warn("detector unavailable", "model", model, "err", err)
+			return nil, nil, err
+		}
+		log.Info("detector loaded", "model", model, "threads", threads, "ms", time.Since(start).Milliseconds())
+		return d, func() error {
+			log.Info("detector unloaded (idle)")
+			return closeFn()
+		}, nil
+	}
+	return mask.New(mask.NewStore(ceDir, 30*24*time.Hour, 50000), mask.NewDetector(load, idle))
+}
+
+func mapHealth(m *mask.Masker) map[string]any {
+	if err := m.Store.Ready(); err != nil {
+		return map[string]any{"ready": false, "reason": err.Error()}
+	}
+	return map[string]any{"ready": true, "entries": m.Store.Len()}
 }
 
 func openListener(path, initName string) (net.Listener, error) {

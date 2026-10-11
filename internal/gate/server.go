@@ -33,8 +33,9 @@ type Server struct {
 	seq     atomic.Uint64
 	wg      sync.WaitGroup
 
-	mu     sync.Mutex
-	health map[string]any
+	mu       sync.Mutex
+	health   map[string]any
+	healthFn func() map[string]any
 }
 
 // Options are the parts tests and the command line replace.
@@ -45,6 +46,8 @@ type Options struct {
 	Sinks []ledger.Sink
 	// Transport overrides the upstream transport (tests).
 	Transport http.RoundTripper
+	// Health adds live entries to the health op (detector, map, core link).
+	Health func() map[string]any
 }
 
 func New(cfg *Config, opts Options) (*Server, error) {
@@ -81,9 +84,10 @@ func New(cfg *Config, opts Options) (*Server, error) {
 			Regions:   route.NewRegions(cfg.DataDir+"/state/regions.json", cfg.regionTTL()),
 			Tenancies: route.NewTenancies(cfg.DataDir + "/appq"),
 		},
-		client: &http.Client{Transport: tr, CheckRedirect: noRedirects},
-		model:  &http.Client{Transport: unixTransport(cfg.ModelSocket), CheckRedirect: noRedirects},
-		health: map[string]any{},
+		client:   &http.Client{Transport: tr, CheckRedirect: noRedirects},
+		model:    &http.Client{Transport: unixTransport(cfg.ModelSocket), CheckRedirect: noRedirects},
+		health:   map[string]any{},
+		healthFn: opts.Health,
 	}
 	return s, nil
 }
@@ -199,6 +203,11 @@ func (s *Server) healthResponse(class string) *wire.Response {
 		h[k] = v
 	}
 	s.mu.Unlock()
+	if s.healthFn != nil {
+		for k, v := range s.healthFn() {
+			h[k] = v
+		}
+	}
 	if class == "debug" {
 		h["regions"] = s.router.Regions.All()
 		h["tenancies"] = s.router.Tenancies.Names()
