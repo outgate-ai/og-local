@@ -59,8 +59,9 @@ func TestGateMasksOutgoingAndRestoresIncoming(t *testing.T) {
 	rec := &rows{}
 	cfg := &gate.Config{
 		Environments: []route.Environment{{ID: "prod", Global: up.URL, OIDC: "https://oidc.example.test"}},
+		Classes:      providerClasses(up.URL),
 		Callers:      []gate.CallerRule{{UID: &uid, Class: "chat"}},
-		AllowHTTP:    []string{"127.0.0.1"},
+		AllowHTTP:    []string{"127.0.0.1", "localhost"},
 		DataDir:      dir, Mode: gate.Mask, Version: "test",
 	}
 	srv, err := gate.New(cfg, &gate.Options{Masker: m, Sinks: []ledger.Sink{rec}})
@@ -76,31 +77,37 @@ func TestGateMasksOutgoingAndRestoresIncoming(t *testing.T) {
 	defer cancel()
 	go func() { _ = srv.Serve(ctx, ln) }()
 
-	text := "Ask " + testName + " at " + testEmail
-	req, _ := json.Marshal(map[string]any{
-		"source": map[string]any{"region_id": "global", "adapter": "chat"}, "method": "POST",
-		"path": "/api/v1/agents/threads/thr-fake-m08/events",
-		"body": map[string]any{"kind": "input.text", "payload": map[string]any{"text": text}}, "egress": map[string]any{},
-	})
-	c, err := net.Dial("unix", sock)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = c.Close() }()
-	_, _ = c.Write(append(req, '\n'))
-	line, err := bufio.NewReader(c).ReadString('\n')
-	if err != nil {
-		t.Fatal(err)
-	}
-	var resp struct {
+	type response struct {
 		Status   int             `json:"status"`
 		Body     json.RawMessage `json:"body"`
 		Masked   map[string]any  `json:"masked"`
+		Class    string          `json:"class"`
 		Restored []map[string]string
 	}
-	if err := json.Unmarshal([]byte(line), &resp); err != nil {
-		t.Fatal(err)
+	call := func(region, path, text string) response {
+		t.Helper()
+		req, _ := json.Marshal(map[string]any{
+			"source": map[string]any{"region_id": region, "adapter": "chat"}, "method": "POST", "path": path,
+			"body": map[string]any{"kind": "input.text", "payload": map[string]any{"text": text}}, "egress": map[string]any{},
+		})
+		c, err := net.Dial("unix", sock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = c.Close() }()
+		_, _ = c.Write(append(req, '\n'))
+		line, err := bufio.NewReader(c).ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		var resp response
+		if err := json.Unmarshal([]byte(line), &resp); err != nil {
+			t.Fatal(err)
+		}
+		return resp
 	}
+	text := "Ask " + testName + " at " + testEmail
+	resp := call("provider:llm", "/v1/messages", text)
 	mu.Lock()
 	sent := seen[0]
 	mu.Unlock()
@@ -122,5 +129,34 @@ func TestGateMasksOutgoingAndRestoresIncoming(t *testing.T) {
 	b, _ := json.Marshal(row)
 	if strings.Contains(string(b), testName) || strings.Contains(string(b), "OG_PII_") {
 		t.Errorf("ledger row holds a value or a placeholder: %s", b)
+	}
+	if row.Class != "provider" || row.Mask != gate.MaskOn || resp.Class != "provider" || resp.Masked["mask"] != gate.MaskOn {
+		t.Errorf("class/mask: row %s/%s, response %s/%v", row.Class, row.Mask, resp.Class, resp.Masked["mask"])
+	}
+
+	// The same text to Outgate leaves as it is: the region's guardrail masks it.
+	out := call("global", "/api/v1/agents/threads/thr-fake-m08/events", text)
+	mu.Lock()
+	sent = seen[1]
+	mu.Unlock()
+	if !strings.Contains(sent, testName) || !strings.Contains(sent, testEmail) || len(Placeholders(sent)) != 0 {
+		t.Errorf("Outgate saw %s", sent)
+	}
+	if out.Status != 200 || out.Class != "outgate" || out.Masked["count"].(float64) != 0 || out.Masked["mask"] != gate.MaskNotRequired {
+		t.Errorf("Outgate response %+v", out)
+	}
+	rec.mu.Lock()
+	row = rec.all[len(rec.all)-1]
+	rec.mu.Unlock()
+	if row.Class != "outgate" || row.Mask != gate.MaskNotRequired || row.MaskedCount != 0 || !row.Content || ledger.Outcome(&row) != "CLEAN" {
+		t.Errorf("Outgate row = %+v", row)
+	}
+
+	// A placeholder this gate minted earlier comes back filled in from Outgate too
+	// (threads from before Outgate traffic went unmasked); nothing else changes.
+	ph := Placeholders(seen[0])[0]
+	back := call("global", "/api/v1/agents/threads/thr-fake-m08/events", "earlier: "+ph)
+	if !strings.Contains(string(back.Body), "You said: earlier: ") || strings.Contains(string(back.Body), ph) || len(back.Restored) != 1 {
+		t.Errorf("legacy placeholder not restored: %s %v", back.Body, back.Restored)
 	}
 }

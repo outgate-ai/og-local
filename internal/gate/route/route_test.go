@@ -129,3 +129,37 @@ func TestPathClass(t *testing.T) {
 		t.Errorf("ThreadID = %q", got)
 	}
 }
+
+func TestDestinationClasses(t *testing.T) {
+	r := testRouter(t)
+	r.Providers = []Provider{{ID: "llm", Base: "https://llm.provider.test/v1"}}
+	r.Regions.Learn("reg-1", "https://reg-1.regions.example.test", "prod")
+	cases := []struct {
+		region, url, path, class string
+	}{
+		{"global", "", "/api/v1/agents/threads", ClassOutgate},
+		{"oidc", "", "/oauth2/token", ClassOutgate},
+		{"", "https://console.example.test/oauth2/token", "", ClassOutgate},
+		{"reg-1", "", "/v1/agents/threads/thr-1/events", ClassOutgate},
+		{"on-device", "", "/v1/chat/completions", ClassOnDevice},
+		{"provider:llm", "", "/messages", ClassProvider},
+		{"", "https://llm.provider.test/v1/messages", "", ClassProvider},
+	}
+	for _, c := range cases {
+		d, err := r.Resolve(c.region, c.url, c.path, nil)
+		if err != nil || d.Class != c.class {
+			t.Errorf("%s %s%s: %+v %v, want class %s", c.region, c.url, c.path, d, err, c.class)
+		}
+	}
+	if d, _ := r.Resolve("provider:llm", "", "/messages", nil); d.URL.String() != "https://llm.provider.test/v1/messages" || d.Env != "" {
+		t.Errorf("provider path: %+v", d)
+	}
+	for _, bad := range []string{"http://llm.provider.test/v1/messages", "https://other.provider.test/x"} {
+		if _, err := r.Resolve("", bad, "", nil); !errors.Is(err, ErrNotAllowed) {
+			t.Errorf("%s: %v", bad, err)
+		}
+	}
+	if _, err := r.Resolve("provider:other", "", "/x", nil); !errors.Is(err, ErrUnknownRegion) {
+		t.Errorf("unknown provider: %v", err)
+	}
+}

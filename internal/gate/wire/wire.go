@@ -42,7 +42,7 @@ type Request struct {
 	Method string `json:"method,omitempty"`
 	// URL is an absolute https URL; otherwise Path (+ Query) is resolved against
 	// the destination named by Source.RegionID ("global", "oidc", a region id,
-	// "appq:<tenancy>", "on-device").
+	// "appq:<tenancy>", "on-device", "provider:<id>").
 	URL     string            `json:"url,omitempty"`
 	Path    string            `json:"path,omitempty"`
 	Query   map[string]any    `json:"query,omitempty"`
@@ -67,6 +67,8 @@ type Masked struct {
 	Blocked int `json:"blocked"`
 	// Categories counts masked values per region label, e.g. {"PII": 2}.
 	Categories map[string]int `json:"categories,omitempty"`
+	// Mask is "on", "off" or "not_required" (traffic to Outgate isn't masked on the phone).
+	Mask string `json:"mask,omitempty"`
 }
 
 type Restored struct {
@@ -89,6 +91,8 @@ type Response struct {
 	Detail  string `json:"detail,omitempty"`
 	// Ledger is the gate's row id for this request.
 	Ledger string `json:"ledger,omitempty"`
+	// Class is the destination's class: outgate, on-device or provider.
+	Class string `json:"class,omitempty"`
 	// ApprovalID is the 08 approval a held request waits for (refused needs_approval:
 	// send the same request again, or with egress.approval_id, after it is answered).
 	ApprovalID string `json:"approval_id,omitempty"`

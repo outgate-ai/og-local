@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,8 +91,9 @@ func startAsk(t *testing.T, pol Policy) *askHarness {
 	core := &fakeCore{byID: map[string]*corelink.Approval{}}
 	cfg := &gate.Config{
 		Environments: []route.Environment{{ID: "prod", Global: up.URL, OIDC: "https://oidc.example.test"}},
+		Classes:      providerClasses(up.URL),
 		Callers:      []gate.CallerRule{{UID: &uid, Class: "agent"}},
-		AllowHTTP:    []string{"127.0.0.1"}, UploadDirs: []string{dir},
+		AllowHTTP:    []string{"127.0.0.1", "localhost"}, UploadDirs: []string{dir},
 		DataDir: dir, Mode: gate.Mask, Version: "test",
 	}
 	srv, err := gate.New(cfg, &gate.Options{Masker: m, Approver: core})
@@ -125,12 +127,48 @@ func (h *askHarness) call(t *testing.T, req map[string]any) map[string]any {
 	return out
 }
 
+// providerClasses configures one external provider, "llm", on the upstream's port
+// under the name localhost (Outgate's global is the same upstream as 127.0.0.1).
+func providerClasses(upstream string) []gate.ClassRule {
+	u, _ := url.Parse(upstream)
+	return []gate.ClassRule{
+		{Class: "outgate"}, {Class: "on-device"},
+		{Class: "provider", Mask: true, Destinations: []route.Provider{{ID: "llm", Base: "http://localhost:" + u.Port()}}},
+	}
+}
+
+// eventReq goes to the external provider: only its class is masked, so only it asks.
 func eventReq(text string, timeoutMs int) map[string]any {
 	return map[string]any{
-		"source": map[string]any{"region_id": "global", "adapter": "devq", "account_id": "acct-fake"}, "method": "POST",
-		"path": "/api/v1/agents/threads/thr-fake-m08/events", "timeout_ms": timeoutMs,
+		"source": map[string]any{"region_id": "provider:llm", "adapter": "local", "account_id": "acct-fake"}, "method": "POST",
+		"path": "/v1/messages", "timeout_ms": timeoutMs,
 		"body":   map[string]any{"kind": "input.text", "payload": map[string]any{"text": text}},
 		"egress": map[string]any{"lane_id": "ln_fake"},
+	}
+}
+
+// The same request to Outgate: never masked, never held.
+func outgateReq(text string) map[string]any {
+	r := eventReq(text, 1000)
+	r["source"] = map[string]any{"region_id": "global", "adapter": "devq", "account_id": "acct-fake"}
+	r["path"] = "/api/v1/agents/threads/thr-fake-m08/events"
+	return r
+}
+
+func TestAskPolicyDoesNotHoldOutgateTraffic(t *testing.T) {
+	h := startAsk(t, DefaultPolicy().Merge(map[Category]Action{Email: Ask, Name: Block}))
+	resp := h.call(t, outgateReq("mail me at "+testEmail))
+	if resp["status"].(float64) != 200 || resp["refused"] != nil {
+		t.Fatalf("resp = %v", resp)
+	}
+	h.mu.Lock()
+	sent := (*h.seen)[0]
+	h.mu.Unlock()
+	if !strings.Contains(sent, testEmail) || len(Placeholders(sent)) != 0 {
+		t.Errorf("Outgate traffic was masked: %s", sent)
+	}
+	if len(h.core.raised) != 0 {
+		t.Errorf("an approval was raised for Outgate traffic: %d", len(h.core.raised))
 	}
 }
 

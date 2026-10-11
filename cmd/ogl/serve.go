@@ -17,6 +17,7 @@ import (
 	"github.com/outgate-ai/og-local/internal/gate/alog"
 	"github.com/outgate-ai/og-local/internal/gate/corelink"
 	"github.com/outgate-ai/og-local/internal/gate/mask"
+	"github.com/outgate-ai/og-local/internal/gate/route"
 	"github.com/outgate-ai/og-local/internal/gate/sysprop"
 	"github.com/outgate-ai/og-local/internal/models"
 	"github.com/outgate-ai/og-local/internal/pii"
@@ -27,9 +28,12 @@ const serveUsage = `Usage:
             [--model-socket NAME | --model-listen PATH] [--mode passthrough|mask]
 
 Runs the OG OS gate: one JSON request per connection on a unix socket (init's
-socket NAME, or PATH), forwarded to Outgate hosts only, recorded in the egress
-ledger under DIR/ledger. --mode defaults to persist.outgate.gate.mode, else mask;
-passthrough (no masking) is honoured only on debuggable builds.
+socket NAME, or PATH), forwarded to Outgate hosts (and the phone region's external
+model providers) only, recorded in the egress ledger under DIR/ledger. Content is
+masked only for destination classes the config marks mask (the providers); traffic
+to Outgate is not, its regions mask with their own guardrail. --mode defaults to
+persist.outgate.gate.mode, else mask; passthrough (no masking) is honoured only on
+debuggable builds.
 `
 
 func runServe(args []string) int {
@@ -125,7 +129,7 @@ func runServe(args []string) int {
 		return 1
 	}
 	if link != nil {
-		go reportHealth(ctx, link, m)
+		go reportHealth(ctx, link, srv, &cfg, m)
 	}
 
 	errc := make(chan error, 2)
@@ -134,7 +138,8 @@ func runServe(args []string) int {
 	} else {
 		log.Info("no on-device model front", "err", err)
 	}
-	log.Info("gate serving", "version", version, "mode", cfg.Mode, "debuggable", cfg.Debuggable)
+	log.Info("gate serving", "version", version, "mode", cfg.Mode, "debuggable", cfg.Debuggable,
+		"masking_needed", cfg.MaskingNeeded(), "providers", len(cfg.Providers()))
 	go func() { errc <- srv.Serve(ctx, ln) }()
 	select {
 	case <-ctx.Done():
@@ -181,19 +186,12 @@ func newMasker(ceDir, model string, log *slog.Logger) *mask.Masker {
 	return mask.New(mask.NewStore(ceDir, 30*24*time.Hour, 50000), det)
 }
 
-// reportHealth keeps OG Core's gate dot current: red with the reason while content
-// can't be masked (decision: the dot and Settings say why chat can't send).
-func reportHealth(ctx context.Context, link *corelink.Link, m *mask.Masker) {
+// reportHealth keeps OG Core's gate dot current.
+func reportHealth(ctx context.Context, link *corelink.Link, srv *gate.Server, cfg *gate.Config, m *mask.Masker) {
 	t := time.NewTicker(5 * time.Second)
 	defer t.Stop()
 	for {
-		connected, detail := true, "passthrough (debug build): content is not masked"
-		if m != nil {
-			connected, detail = true, "masking"
-			if ok, why := m.Ready(); !ok {
-				connected, detail = false, healthDetail(why, m)
-			}
-		}
+		connected, detail := gateHealth(srv, cfg, m)
 		link.ReportHealth(connected, detail)
 		select {
 		case <-ctx.Done():
@@ -204,15 +202,33 @@ func reportHealth(ctx context.Context, link *corelink.Link, m *mask.Masker) {
 	}
 }
 
+// gateHealth is the dot: connected (green) and a detail. Traffic to Outgate is not
+// masked on the phone, so with no external providers the detector isn't needed and
+// its absence is no fault. With providers, a detector that can't run keeps only
+// their content on the phone (fail closed for that class) and the dot says so; it
+// turns red only if gate.conf masks Outgate traffic too, which then can't leave.
+func gateHealth(srv *gate.Server, cfg *gate.Config, m *mask.Masker) (connected bool, detail string) {
+	needed, ready, why := srv.MaskingState()
+	switch {
+	case !needed:
+		return true, gate.DetectorNotNeeded
+	case cfg.Mode == gate.Passthrough || m == nil:
+		return true, "passthrough (debug build): provider content is not masked"
+	case ready:
+		return true, "masking content to external providers"
+	}
+	return !cfg.Masks(route.ClassOutgate), healthDetail(why, m)
+}
+
 func healthDetail(reason string, m *mask.Masker) string {
 	switch reason {
 	case mask.ErrLocked.Error():
-		return "Unlock the phone once: the gate's storage is still locked"
+		return "Unlock the phone once: the gate's storage is still locked, so content to external providers can't leave"
 	case mask.ErrDetectorUnavailable.Error():
 		if r := m.Detector.Reason(); r != "" {
-			return "The gate's detector isn't available (" + r + "), so nothing with content can leave"
+			return "The gate's detector isn't available (" + r + "), so content to external providers can't leave"
 		}
-		return "The gate's detector isn't available, so nothing with content can leave"
+		return "The gate's detector isn't available, so content to external providers can't leave"
 	}
 	return reason
 }

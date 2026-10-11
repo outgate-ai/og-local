@@ -20,8 +20,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/outgate-ai/og-local/internal/gate/corelink"
 	"github.com/outgate-ai/og-local/internal/gate/ledger"
 	"github.com/outgate-ai/og-local/internal/gate/route"
+	"github.com/outgate-ai/og-local/internal/gate/wire"
 )
 
 type upstream struct {
@@ -120,6 +122,12 @@ type harness struct {
 
 func start(t *testing.T, mode Mode, mutate func(*Config)) *harness {
 	t.Helper()
+	return startWith(t, mode, mutate, nil, nil)
+}
+
+// startWith also takes a masker and an approver (nil: the defaults of New).
+func startWith(t *testing.T, mode Mode, mutate func(*Config), masker Masker, ap Approver) *harness {
+	t.Helper()
 	up := newUpstream(t)
 	dir := t.TempDir()
 	uid := uint32(os.Getuid()) //nolint:gosec // uids fit uint32
@@ -135,9 +143,12 @@ func start(t *testing.T, mode Mode, mutate func(*Config)) *harness {
 		mutate(&cfg)
 	}
 	rows := &rec{}
-	srv, err := New(&cfg, &Options{Sinks: []ledger.Sink{rows}, Transport: regionDialer(up.srv.URL)})
+	srv, err := New(&cfg, &Options{Sinks: []ledger.Sink{rows}, Transport: regionDialer(up.srv.URL), Masker: masker, Approver: ap})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if fa, ok := ap.(*fakeApprover); ok {
+		fa.srv = srv
 	}
 	sock := filepath.Join(dir, "gate.sock")
 	ln, err := ListenPath(sock, 0o600)
@@ -219,7 +230,8 @@ func TestPassthroughForwardsUnchangedAndRecords(t *testing.T) {
 	row := h.rows.last(t)
 	if row.PathClass != "/api/v1/agents/threads/:id/events" || row.ThreadID != "thr-abc123" || row.Kind != "event" ||
 		!row.Content || row.BytesOut != int64(len(got.Body)) || row.Status != 200 || row.LaneID != "ln_1" ||
-		row.StepIndex == nil || *row.StepIndex != 3 || row.Mode != "passthrough" || row.Blocked || row.Caller != "agent" {
+		row.StepIndex == nil || *row.StepIndex != 3 || row.Mode != "passthrough" || row.Blocked || row.Caller != "agent" ||
+		row.Class != "outgate" || row.Mask != MaskNotRequired {
 		t.Errorf("row = %+v", row)
 	}
 	if resp["ledger"] != row.ID {
@@ -256,36 +268,302 @@ func TestRefusesHostsOutsideTheAllowlist(t *testing.T) {
 	}
 }
 
-func TestMaskModeFailsClosedWithoutDetector(t *testing.T) {
+// Traffic to Outgate is not masked on the phone: without any detector, content to
+// global and to regions leaves unchanged and the gate is healthy.
+func TestOutgateContentLeavesUnmaskedWithoutDetector(t *testing.T) {
 	h := start(t, Mask, nil)
-	n := len(h.up.got)
+	body := `{"kind":"input.text","payload":{"text":"Call Jane Example on 555-0100"}}`
 	resp := h.call(`{"source":{"region_id":"global","adapter":"chat"},"method":"POST","path":"/api/v1/agents/threads/thr-1/events",` +
-		`"body":{"kind":"input.text","payload":{"text":"hello"}},"egress":{}}`)
-	if resp["refused"] != "detector_unavailable" || resp["status"].(float64) != 503 {
-		t.Fatalf("content not refused: %v", resp)
+		`"body":` + body + `,"egress":{}}`)
+	if resp["status"].(float64) != 200 || resp["refused"] != nil || resp["class"] != "outgate" {
+		t.Fatalf("content to Outgate refused: %v", resp)
 	}
-	if len(h.up.got) != n {
-		t.Fatal("content reached the upstream")
+	if m := resp["masked"].(map[string]any); m["count"].(float64) != 0 || m["mask"] != MaskNotRequired {
+		t.Errorf("masked = %v", m)
 	}
-	if row := h.rows.last(t); !row.Blocked || row.BlockReason != "detector_unavailable" || row.BytesOut != 0 {
+	if got := h.up.last().Body; got != body {
+		t.Errorf("upstream got %s", got)
+	}
+	row := h.rows.last(t)
+	if row.Blocked || !row.Content || row.Class != "outgate" || row.Mask != MaskNotRequired || row.MaskedCount != 0 ||
+		row.BytesOut != int64(len(body)) || row.Status != 200 || row.Destination != "127.0.0.1" || row.PathClass != "/api/v1/agents/threads/:id/events" {
 		t.Errorf("row = %+v", row)
 	}
-	resp = h.call(`{"source":{"region_id":"global","adapter":"chat"},"method":"GET","path":"/api/v1/agents/threads","egress":{"kind":"poll"}}`)
-	if resp["status"].(float64) != 200 {
-		t.Errorf("content-free GET refused: %v", resp)
+	if ledger.Outcome(&row) != "CLEAN" {
+		t.Errorf("outcome = %s", ledger.Outcome(&row))
 	}
-	resp = h.call(`{"source":{"region_id":"global","adapter":"devq"},"method":"POST","path":"/api/v1/agents/devices/d1/presence","body":{"driving":"agents"},"egress":{"kind":"presence"}}`)
-	if resp["status"].(float64) != 200 {
-		t.Errorf("presence refused: %v", resp)
+	health := h.call(`{"op":"health"}`)["body"].(map[string]any)
+	content := health["content"].(map[string]any)
+	masking := health["masking"].(map[string]any)
+	if content["ready"] != true || content["reason"] != DetectorNotNeeded || masking["needed"] != false ||
+		masking["providers"].(float64) != 0 || health["mode"] != "mask" {
+		t.Errorf("health = %v", health)
 	}
-	resp = h.call(fmt.Sprintf(`{"source":{"adapter":"chat"},"method":"POST","url":"http://localhost:%s/oauth2/token","body_text":"grant_type=refresh_token","content_type":"application/x-www-form-urlencoded","egress":{}}`, portOf(h.up.srv.URL)))
-	if resp["status"].(float64) != 200 {
-		t.Errorf("token refresh refused: %v", resp)
+	if cl := masking["classes"].(map[string]any); cl["outgate"] != false || cl["on-device"] != false || cl["provider"] != true {
+		t.Errorf("classes = %v", cl)
 	}
-	health := h.call(`{"op":"health"}`)
-	body := health["body"].(map[string]any)
-	if body["content"].(map[string]any)["ready"] != false || body["mode"] != "mask" {
-		t.Errorf("health = %v", body)
+}
+
+func withProvider(port string) func(*Config) {
+	return func(c *Config) {
+		c.AllowHTTP = append(c.AllowHTTP, "provider.localhost")
+		c.Classes = []ClassRule{
+			{Class: "outgate"}, {Class: "on-device"},
+			{Class: "provider", Mask: true, Destinations: []route.Provider{{ID: "llm", Base: "http://provider.localhost:" + port}}},
+		}
+	}
+}
+
+// Fail closed applies to the masked class only: with an external provider configured
+// and no detector, content to the provider is refused, everything else still leaves.
+func TestProviderContentFailsClosedWithoutDetector(t *testing.T) {
+	var h *harness
+	h = startWith(t, Mask, func(c *Config) { withProvider(portOf(c.Environments[0].Global))(c) }, nil, nil)
+	n := len(h.up.got)
+	resp := h.call(`{"source":{"region_id":"provider:llm","adapter":"local"},"method":"POST","path":"/v1/chat/completions",` +
+		`"body":{"messages":[{"role":"user","content":"hello"}]},"egress":{}}`)
+	if resp["refused"] != "detector_unavailable" || resp["status"].(float64) != 503 || resp["class"] != "provider" {
+		t.Fatalf("provider content not refused: %v", resp)
+	}
+	if len(h.up.got) != n {
+		t.Fatal("provider content reached the upstream")
+	}
+	if row := h.rows.last(t); !row.Blocked || row.BlockReason != "detector_unavailable" || row.Class != "provider" ||
+		row.Mask != MaskOn || row.BytesOut != 0 || row.Destination != "provider.localhost" {
+		t.Errorf("row = %+v", row)
+	}
+	resp = h.call(`{"source":{"region_id":"provider:llm","adapter":"local"},"method":"GET","path":"/v1/models","egress":{}}`)
+	if resp["status"].(float64) != 200 {
+		t.Errorf("content-free provider GET refused: %v", resp)
+	}
+	if row := h.rows.last(t); row.Mask != MaskNotRequired || row.Class != "provider" || row.Content {
+		t.Errorf("content-free row = %+v", row)
+	}
+	resp = h.call(`{"source":{"region_id":"global","adapter":"chat"},"method":"POST","path":"/api/v1/agents/threads/thr-1/events","body":{"text":"hello"},"egress":{}}`)
+	if resp["status"].(float64) != 200 {
+		t.Errorf("Outgate content refused with a provider configured: %v", resp)
+	}
+	health := h.call(`{"op":"health"}`)["body"].(map[string]any)
+	if health["masking"].(map[string]any)["needed"] != true || health["content"].(map[string]any)["ready"] != false {
+		t.Errorf("health = %v", health)
+	}
+}
+
+// markerMasker masks one synthetic marker and counts its calls.
+type markerMasker struct {
+	mu    sync.Mutex
+	calls int
+}
+
+const marker = "synthetic-marker-4711"
+
+func (m *markerMasker) Mask(_ context.Context, _ *Call, body []byte) ([]byte, wire.Masked, error) {
+	m.mu.Lock()
+	m.calls++
+	m.mu.Unlock()
+	if !strings.Contains(string(body), marker) {
+		return body, wire.Masked{}, nil
+	}
+	return []byte(strings.ReplaceAll(string(body), marker, "[masked]")), wire.Masked{Count: 1, Categories: map[string]int{"PII": 1}}, nil
+}
+
+func (m *markerMasker) Restore(_ context.Context, _ *Call, body []byte) ([]byte, []wire.Restored) {
+	return body, nil
+}
+
+func (m *markerMasker) Ready() (bool, string) { return true, "" }
+
+func (m *markerMasker) n() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.calls
+}
+
+// The class split with a working masker: Outgate unmasked, the provider masked,
+// the provider unmasked in passthrough (debuggable builds), each row saying which.
+func TestMaskingFollowsTheDestinationClass(t *testing.T) {
+	mm := &markerMasker{}
+	var h *harness
+	h = startWith(t, Mask, func(c *Config) { withProvider(portOf(c.Environments[0].Global))(c) }, mm, nil)
+	body := `{"text":"note ` + marker + `"}`
+	resp := h.call(`{"source":{"region_id":"global","adapter":"chat"},"method":"POST","path":"/api/v1/agents/threads/thr-1/events","body":` + body + `,"egress":{}}`)
+	if resp["status"].(float64) != 200 || h.up.last().Body != body || mm.n() != 0 {
+		t.Fatalf("Outgate content masked: %v %s (masker calls %d)", resp, h.up.last().Body, mm.n())
+	}
+	if row := h.rows.last(t); row.Class != "outgate" || row.Mask != MaskNotRequired || row.MaskedCount != 0 {
+		t.Errorf("outgate row = %+v", row)
+	}
+
+	resp = h.call(`{"source":{"region_id":"provider:llm","adapter":"local"},"method":"POST","path":"/v1/chat/completions","body":` + body + `,"egress":{}}`)
+	if resp["status"].(float64) != 200 || strings.Contains(h.up.last().Body, marker) || mm.n() != 1 {
+		t.Fatalf("provider content not masked: %v %s", resp, h.up.last().Body)
+	}
+	if m := resp["masked"].(map[string]any); m["count"].(float64) != 1 || m["mask"] != MaskOn || resp["class"] != "provider" {
+		t.Errorf("masked = %v", resp)
+	}
+	if row := h.rows.last(t); row.Class != "provider" || row.Mask != MaskOn || row.MaskedCount != 1 || ledger.Outcome(&row) != "MASKED" {
+		t.Errorf("provider row = %+v", row)
+	}
+
+	// An absolute URL on the provider's host is the provider class too.
+	resp = h.call(fmt.Sprintf(`{"source":{"adapter":"local"},"method":"POST","url":"http://provider.localhost:%s/v1/chat/completions","body":%s,"egress":{}}`, portOf(h.up.srv.URL), body))
+	if resp["status"].(float64) != 200 || resp["class"] != "provider" || strings.Contains(h.up.last().Body, marker) {
+		t.Errorf("provider by URL: %v %s", resp, h.up.last().Body)
+	}
+
+	h.srv.cfg.Mode = Passthrough
+	h.srv.masker = passthrough{}
+	resp = h.call(`{"source":{"region_id":"provider:llm","adapter":"local"},"method":"POST","path":"/v1/chat/completions","body":` + body + `,"egress":{}}`)
+	if resp["status"].(float64) != 200 || h.up.last().Body != body {
+		t.Fatalf("passthrough: %v %s", resp, h.up.last().Body)
+	}
+	if row := h.rows.last(t); row.Mask != MaskOff || row.Class != "provider" {
+		t.Errorf("passthrough row = %+v", row)
+	}
+}
+
+func TestProviderRouting(t *testing.T) {
+	h := startWith(t, Passthrough, func(c *Config) { withProvider(portOf(c.Environments[0].Global))(c) }, nil, nil)
+	if resp := h.call(`{"source":{"region_id":"provider:nope"},"method":"GET","path":"/v1/models","egress":{}}`); resp["refused"] != "unknown_region" {
+		t.Errorf("unknown provider: %v", resp)
+	}
+	if resp := h.call(`{"source":{},"method":"GET","url":"https://api.other-llm.test/v1/models","egress":{}}`); resp["refused"] != "destination_not_allowed" {
+		t.Errorf("unconfigured provider host: %v", resp)
+	}
+	h2 := start(t, Passthrough, nil)
+	if resp := h2.call(`{"source":{"region_id":"provider:llm"},"method":"GET","path":"/v1/models","egress":{}}`); resp["refused"] != "unknown_region" {
+		t.Errorf("no providers configured: %v", resp)
+	}
+}
+
+func TestClassConfig(t *testing.T) {
+	var c Config
+	if c.Masks("outgate") || c.Masks("on-device") || !c.Masks("provider") || c.MaskingNeeded() {
+		t.Errorf("defaults: %v needed=%v", c.MaskingClasses(), c.MaskingNeeded())
+	}
+	c.Classes = []ClassRule{{Class: "provider", Mask: true, Destinations: []route.Provider{{ID: "a", Base: "https://llm.example.test"}}}}
+	if err := c.Validate(); err != nil || !c.MaskingNeeded() || c.Masks("outgate") {
+		t.Errorf("provider configured: %v needed=%v", err, c.MaskingNeeded())
+	}
+	env := []route.Environment{{ID: "prod", Global: "https://api.outgate.test", OIDC: "https://console.outgate.test"}}
+	bad := map[string][]ClassRule{
+		"unknown class":     {{Class: "region"}},
+		"twice":             {{Class: "outgate"}, {Class: "outgate"}},
+		"on-device masked":  {{Class: "on-device", Mask: true}},
+		"outgate endpoints": {{Class: "outgate", Destinations: []route.Provider{{ID: "x", Base: "https://x.test"}}}},
+		"provider on Outgate's host": {{Class: "provider", Mask: true,
+			Destinations: []route.Provider{{ID: "x", Base: "https://api.outgate.test/v1"}}}},
+		"provider without id": {{Class: "provider", Destinations: []route.Provider{{Base: "https://x.test"}}}},
+		"provider bad base":   {{Class: "provider", Destinations: []route.Provider{{ID: "x", Base: "ftp://x.test"}}}},
+	}
+	for name, classes := range bad {
+		c := Config{Environments: env, Classes: classes}
+		if err := c.Validate(); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	dir := t.TempDir()
+	conf := filepath.Join(dir, "gate.conf")
+	_ = os.WriteFile(conf, []byte(`{"classes":[{"class":"on-device","mask":true}]}`), 0o600)
+	if _, err := LoadConfig(conf); err == nil {
+		t.Error("LoadConfig accepted a masked on-device class")
+	}
+	if _, err := New(&Config{DataDir: dir, Classes: []ClassRule{{Class: "x"}}}, &Options{}); err == nil {
+		t.Error("New accepted an unknown class")
+	}
+}
+
+// fakeApprover answers approvals like OG Core after the user tapped the 08 sheet.
+type fakeApprover struct {
+	mu     sync.Mutex
+	srv    *Server
+	answer *corelink.Answer
+	byID   map[string]*corelink.Approval
+	raised int
+}
+
+func (f *fakeApprover) Up() bool { return true }
+
+func (f *fakeApprover) Raise(_ context.Context, _ *corelink.Request) (string, error) {
+	f.mu.Lock()
+	f.raised++
+	id := fmt.Sprintf("ap_g%d", f.raised)
+	ans := f.answer
+	f.mu.Unlock()
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		f.srv.ApprovalResolved(&corelink.Approval{ID: id, State: corelink.StateAnswered, Answer: ans})
+	}()
+	return id, nil
+}
+
+func (f *fakeApprover) Get(_ context.Context, id string) (*corelink.Approval, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.byID[id], nil
+}
+
+func (f *fakeApprover) Cancel(string, string) {}
+
+// Decision #18 stays: images an agent uploads to Outgate need an 08 approval even
+// though nothing is masked; images the user attaches in Chat pass.
+func TestImageConsentForAgentUploadsOnly(t *testing.T) {
+	ap := &fakeApprover{byID: map[string]*corelink.Approval{}}
+	h := startWith(t, Mask, nil, nil, ap)
+	png := filepath.Join(h.dir, "shot.png")
+	_ = os.WriteFile(png, []byte("\x89PNG\r\n\x1a\n synthetic"), 0o600)
+	upload := func(approval string) string {
+		return fmt.Sprintf(`{"source":{"region_id":"global","adapter":"devq"},"method":"POST","path":"/api/v1/agents/devices/d1/uploads",`+
+			`"body":{"lane_id":"ln_1"},"file":"fd:0","egress":{"kind":"upload","approval_id":%q},"timeout_ms":1500}`, approval)
+	}
+	send := func(line string) map[string]any {
+		f, err := os.Open(png)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = f.Close() }()
+		return h.callFD(line, int(f.Fd()))
+	}
+	n := len(h.up.got)
+	// The agent, approve without choosing the image: its default is blocked.
+	ap.answer = &corelink.Answer{Role: corelink.RoleApprove}
+	if resp := send(upload("")); resp["refused"] != "blocked_by_policy" || resp["approval_id"] != "ap_g1" {
+		t.Errorf("image left without being chosen: %v", resp)
+	}
+	if row := h.rows.last(t); !row.Blocked || row.Class != "outgate" || row.Mask != MaskNotRequired || row.ApprovalID != "ap_g1" {
+		t.Errorf("row = %+v", row)
+	}
+	// Chosen REAL on the sheet: it leaves.
+	ap.answer = &corelink.Answer{Role: corelink.RoleApprove, Choices: []corelink.Choice{{Item: "image", Treatment: corelink.TreatReal}}}
+	if resp := send(upload("")); resp["status"].(float64) != 200 {
+		t.Errorf("approved image: %v", resp)
+	}
+	// og-agentd's own screenshot approval, answered yes.
+	ap.byID["ap_shot"] = &corelink.Approval{ID: "ap_shot", State: corelink.StateAnswered, Answer: &corelink.Answer{Role: corelink.RoleApprove}}
+	if resp := send(upload("ap_shot")); resp["status"].(float64) != 200 {
+		t.Errorf("agent's approved screenshot: %v", resp)
+	}
+	if got := len(h.up.got) - n; got != 2 {
+		t.Errorf("uploads that left: %d, want 2", got)
+	}
+
+	// Chat: the user attached it, no approval is raised.
+	uid := uint32(os.Getuid()) //nolint:gosec // uids fit uint32
+	h.srv.cfg.Callers = []CallerRule{{UID: &uid, Class: "chat"}}
+	raised := ap.raised
+	if resp := send(upload("")); resp["status"].(float64) != 200 {
+		t.Errorf("chat attachment: %v", resp)
+	}
+	if ap.raised != raised {
+		t.Error("an approval was raised for a chat attachment")
+	}
+
+	// Without OG Core nobody can approve: nothing leaves.
+	h2 := start(t, Mask, nil)
+	f, _ := os.Open(png)
+	defer func() { _ = f.Close() }()
+	if resp := h2.callFD(upload(""), int(f.Fd())); resp["refused"] != "core_unavailable" || len(h2.up.got) != 0 {
+		t.Errorf("no approver: %v", resp)
 	}
 }
 
@@ -356,7 +634,11 @@ func TestAppqTenancyTokenInjected(t *testing.T) {
 }
 
 func TestUploadMultipart(t *testing.T) {
-	h := start(t, Passthrough, nil)
+	ap := &fakeApprover{
+		byID:   map[string]*corelink.Approval{"ap_1": {ID: "ap_1", State: corelink.StateAnswered, Answer: &corelink.Answer{Role: corelink.RoleApprove}}},
+		answer: &corelink.Answer{Role: corelink.RoleApprove, Choices: []corelink.Choice{{Item: "image", Treatment: corelink.TreatReal}}},
+	}
+	h := startWith(t, Passthrough, nil, nil, ap)
 	up := filepath.Join(h.dir, "uploads")
 	_ = os.MkdirAll(up, 0o700)
 	png := filepath.Join(up, "step-3.png")

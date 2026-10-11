@@ -1,14 +1,24 @@
 // Package gate is OG OS's on-device gate (og-os module M08): every byte an Outgate
 // component sends off the phone leaves through it. It listens only on unix
 // sockets, identifies callers by uid and SELinux domain, refuses destinations
-// outside Outgate's own hosts, records every request in the egress ledger, and
-// fails closed.
+// outside Outgate's own hosts (and the phone region's external model providers),
+// and records every request in the egress ledger.
+//
+// Masking is decided per destination class (gate.conf "classes"). Traffic to
+// Outgate (global, the OIDC issuer, regions, app tenancies) is not masked: the
+// region is the trust point and its guardrail masks on its own provider path, so
+// masking on the phone too would anonymize twice. Only a class marked mask, the
+// phone region's external providers, is masked, and only it fails closed when
+// content can't be masked. The on-device model is never masked.
 package gate
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/outgate-ai/og-local/internal/gate/route"
@@ -37,13 +47,44 @@ type CallerRule struct {
 	DebuggableOnly bool   `json:"debuggable_only,omitempty"`
 }
 
+// ClassRule says whether content to one destination class is masked.
+type ClassRule struct {
+	Class string `json:"class"`
+	Mask  bool   `json:"mask"`
+	// Destinations are the class's endpoints; only the provider class lists any
+	// (Outgate's come from environments, learning and tenancies).
+	Destinations []route.Provider `json:"destinations,omitempty"`
+}
+
+// DefaultClasses apply when gate.conf names none: Outgate and the on-device model
+// unmasked, the phone region's external providers masked (none configured).
+func DefaultClasses() []ClassRule {
+	return []ClassRule{
+		{Class: route.ClassOutgate, Mask: false},
+		{Class: route.ClassOnDevice, Mask: false},
+		{Class: route.ClassProvider, Mask: true},
+	}
+}
+
+// Ledger and response values of a request's mask state.
+const (
+	// MaskOn: the request's content went through the masker.
+	MaskOn = "on"
+	// MaskOff: its class requires masking, but the gate runs in passthrough (debuggable only).
+	MaskOff = "off"
+	// MaskNotRequired: its class isn't masked, or it carried no content.
+	MaskNotRequired = "not_required"
+)
+
 // Config is gate.conf plus what the command line and properties decide.
 type Config struct {
 	Environments []route.Environment `json:"environments"`
 	Learn        []route.LearnRule   `json:"learn"`
-	Callers      []CallerRule        `json:"callers"`
-	ModelSocket  string              `json:"model_socket"`
-	AllowHTTP    []string            `json:"allow_http,omitempty"`
+	// Classes decide masking per destination class (DefaultClasses when empty).
+	Classes     []ClassRule  `json:"classes,omitempty"`
+	Callers     []CallerRule `json:"callers"`
+	ModelSocket string       `json:"model_socket"`
+	AllowHTTP   []string     `json:"allow_http,omitempty"`
 	// UploadDirs are where callers' upload files may live (og-agentd's tmp/).
 	UploadDirs []string `json:"upload_dirs,omitempty"`
 	// PackagesList is packages.list, for package caller rules (default: Android's).
@@ -66,7 +107,108 @@ func LoadConfig(path string) (Config, error) {
 	if err := json.Unmarshal(b, &c); err != nil {
 		return c, fmt.Errorf("gate: %s: %w", path, err)
 	}
+	if err := c.Validate(); err != nil {
+		return c, fmt.Errorf("gate: %s: %w", path, err)
+	}
 	return c, nil
+}
+
+// Validate checks the destination classes: known names, each once, the on-device
+// model never masked, endpoints only for providers, and a provider never on one
+// of Outgate's own hosts (Outgate traffic must not become maskable by a typo).
+func (c *Config) Validate() error {
+	seen := map[string]bool{}
+	for _, r := range c.Classes {
+		switch r.Class {
+		case route.ClassOutgate, route.ClassOnDevice, route.ClassProvider:
+		default:
+			return fmt.Errorf("classes: unknown class %q", r.Class)
+		}
+		if seen[r.Class] {
+			return fmt.Errorf("classes: %q twice", r.Class)
+		}
+		seen[r.Class] = true
+		if r.Class == route.ClassOnDevice && r.Mask {
+			return errors.New("classes: the on-device model is never masked")
+		}
+		if len(r.Destinations) > 0 && r.Class != route.ClassProvider {
+			return fmt.Errorf("classes: %q takes no destinations", r.Class)
+		}
+		ids := map[string]bool{}
+		for _, d := range r.Destinations {
+			u, err := url.Parse(d.Base)
+			if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "https" && u.Scheme != "http") {
+				return fmt.Errorf("classes: provider %q: bad base %q", d.ID, d.Base)
+			}
+			if d.ID == "" || ids[d.ID] {
+				return fmt.Errorf("classes: provider ids must be set and unique (%q)", d.ID)
+			}
+			ids[d.ID] = true
+			for _, e := range c.Environments {
+				if sameHost(u, e.Global) || sameHost(u, e.OIDC) {
+					return fmt.Errorf("classes: provider %q is on Outgate's own host %s", d.ID, u.Hostname())
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func sameHost(u *url.URL, base string) bool {
+	b, err := url.Parse(base)
+	return err == nil && b.Hostname() != "" && strings.EqualFold(b.Hostname(), u.Hostname())
+}
+
+func (c *Config) classes() []ClassRule {
+	if len(c.Classes) == 0 {
+		return DefaultClasses()
+	}
+	return c.Classes
+}
+
+// Masks reports whether content to destination class is masked. A class gate.conf
+// doesn't list takes its default.
+func (c *Config) Masks(class string) bool {
+	for _, r := range c.classes() {
+		if r.Class == class {
+			return r.Mask
+		}
+	}
+	for _, r := range DefaultClasses() {
+		if r.Class == class {
+			return r.Mask
+		}
+	}
+	return false
+}
+
+// Providers are the configured external provider endpoints.
+func (c *Config) Providers() []route.Provider {
+	for _, r := range c.classes() {
+		if r.Class == route.ClassProvider {
+			return r.Destinations
+		}
+	}
+	return nil
+}
+
+// MaskingNeeded reports whether any configured destination needs masking: a
+// masked class with endpoints, or Outgate itself if gate.conf masks it. Without
+// it the detector is never loaded and its absence is not a fault.
+func (c *Config) MaskingNeeded() bool {
+	if c.Masks(route.ClassOutgate) {
+		return true
+	}
+	return c.Masks(route.ClassProvider) && len(c.Providers()) > 0
+}
+
+// MaskingClasses maps each class to whether it is masked (health).
+func (c *Config) MaskingClasses() map[string]bool {
+	return map[string]bool{
+		route.ClassOutgate:  c.Masks(route.ClassOutgate),
+		route.ClassOnDevice: c.Masks(route.ClassOnDevice),
+		route.ClassProvider: c.Masks(route.ClassProvider),
+	}
 }
 
 func (c *Config) ledgerRetention() time.Duration {

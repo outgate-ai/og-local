@@ -27,7 +27,9 @@ type Row struct {
 	Adapter    string    `json:"adapter,omitempty"`
 	// Destination is the display host ("api.outgate.ai") or "on-device model".
 	Destination string `json:"destination"`
-	Method      string `json:"method"`
+	// Class is the destination class: outgate, on-device or provider ("" when refused before routing).
+	Class  string `json:"class,omitempty"`
+	Method string `json:"method"`
 	// PathClass is the path with ids replaced by ":id".
 	PathClass  string `json:"path_class"`
 	EgressKind string `json:"egress_kind,omitempty"`
@@ -45,11 +47,14 @@ type Row struct {
 	MaskedCount      int            `json:"masked_count"`
 	MaskedCategories map[string]int `json:"masked_categories,omitempty"`
 	RestoredCount    int            `json:"restored_count,omitempty"`
-	Blocked          bool           `json:"blocked"`
-	BlockReason      string         `json:"block_reason,omitempty"`
-	OnDevice         bool           `json:"on_device"`
-	Mode             string         `json:"mode"`
-	Error            string         `json:"error,omitempty"`
+	// Mask is whether the content was masked: "on", "off" (a masked class in
+	// passthrough) or "not_required" (its class isn't masked, or no content).
+	Mask        string `json:"mask,omitempty"`
+	Blocked     bool   `json:"blocked"`
+	BlockReason string `json:"block_reason,omitempty"`
+	OnDevice    bool   `json:"on_device"`
+	Mode        string `json:"mode"`
+	Error       string `json:"error,omitempty"`
 }
 
 // Sink receives every row once it is complete.

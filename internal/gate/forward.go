@@ -54,19 +54,38 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 		AccountID: req.Source.AccountID, RegionID: req.Source.RegionID, Adapter: req.Source.Adapter,
 		Method: method, EgressKind: req.Egress.Kind, LaneID: req.Egress.LaneID,
 		StepIndex: req.Egress.StepIndex, ApprovalID: req.Egress.ApprovalID, Mode: string(s.cfg.Mode),
+		Mask: MaskNotRequired,
 	}
 	defer func() {
 		row.DurationMs = time.Since(start).Milliseconds()
 		s.ledger.Record(&row)
-		s.log.Info("egress", "id", row.ID, "caller", row.Caller, "dest", row.Destination, "method", row.Method,
-			"path", row.PathClass, "status", row.Status, "out", row.BytesOut, "in", row.BytesIn,
-			"masked", row.MaskedCount, "blocked", row.Blocked, "reason", row.BlockReason, "ms", row.DurationMs)
+		s.log.Info("egress", "id", row.ID, "caller", row.Caller, "dest", row.Destination, "class", row.Class,
+			"method", row.Method, "path", row.PathClass, "status", row.Status, "out", row.BytesOut, "in", row.BytesIn,
+			"mask", row.Mask, "masked", row.MaskedCount, "blocked", row.Blocked, "reason", row.BlockReason, "ms", row.DurationMs)
 	}()
 	refuse := func(status int, reason, detail string) *wire.Response {
 		row.Blocked, row.BlockReason, row.Status = true, reason, status
 		r := wire.Refuse(req.ID, status, reason, detail)
-		r.Ledger = row.ID
+		r.Ledger, r.Class, r.Masked.Mask = row.ID, row.Class, row.Mask
 		return r
+	}
+	refuseAsk := func(aerr error, approvalID, detail string) *wire.Response {
+		status, reason := 403, ErrNeedsApproval.Error()
+		switch {
+		case errors.Is(aerr, ErrApprovalDenied):
+			reason = ErrApprovalDenied.Error()
+		case errors.Is(aerr, ErrApprovalCancelled):
+			reason = ErrApprovalCancelled.Error()
+		case errors.Is(aerr, ErrCoreUnavailable):
+			status, reason = 503, ErrCoreUnavailable.Error()
+		}
+		r := refuse(status, reason, detail)
+		r.ApprovalID = approvalID
+		return r
+	}
+	holdBudget := holdDefault
+	if req.TimeoutMs > 0 {
+		holdBudget = min(time.Duration(req.TimeoutMs)*time.Millisecond, holdMax)
 	}
 	if !methods[method] {
 		return refuse(400, "bad_method", method)
@@ -100,7 +119,7 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 	if dest.URL != nil {
 		path = dest.URL.Path
 	}
-	row.Destination = dest.Display
+	row.Destination, row.Class = dest.Display, dest.Class
 	row.PathClass = route.PathClass(path)
 	row.OnDevice = dest.Kind == route.OnDevice
 	row.ThreadID = req.Egress.ThreadID
@@ -121,33 +140,44 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 	row.Content = call.Content
 	row.BytesOutRaw = int64(len(body))
 
+	// Images and screenshots an agent sends leave only with the user's approval
+	// (decision #18), whatever the destination's masking: this is consent, not
+	// anonymization. What the user attaches in Chat passes: they chose to send it.
+	if call.Binary && len(body) > 0 && dest.Kind == route.Cloud && imageNeedsConsent(class) {
+		na := &NeedsApproval{Images: true}
+		d, approvalID, aerr := s.asks.hold(ctx, call, dest.Display, na, holdBudget)
+		if approvalID != "" {
+			row.ApprovalID = approvalID
+		}
+		if aerr != nil {
+			return refuseAsk(aerr, approvalID, na.Error())
+		}
+		if !d.images {
+			r := refuse(403, "blocked_by_policy", "the image was not chosen to leave")
+			r.ApprovalID = approvalID
+			return r
+		}
+		call.Approved = true
+	}
+
+	// Content is masked only for a class gate.conf marks mask: the phone region's
+	// external providers. Outgate's regions mask with their own guardrail.
 	sent := body
-	if call.Content && !row.OnDevice {
+	if call.Content && s.cfg.Masks(dest.Class) {
+		row.Mask = MaskOn
+		if s.cfg.Mode == Passthrough {
+			row.Mask = MaskOff
+		}
 		var m wire.Masked
 		sent, m, err = s.masker.Mask(ctx, call, body)
 		var na *NeedsApproval
 		if errors.As(err, &na) {
-			budget := holdDefault
-			if req.TimeoutMs > 0 {
-				budget = min(time.Duration(req.TimeoutMs)*time.Millisecond, holdMax)
-			}
-			d, approvalID, aerr := s.asks.hold(ctx, call, dest.Display, na, budget)
+			d, approvalID, aerr := s.asks.hold(ctx, call, dest.Display, na, holdBudget)
 			row.ApprovalID = approvalID
 			if aerr != nil {
-				status, reason := 403, ErrNeedsApproval.Error()
-				switch {
-				case errors.Is(aerr, ErrApprovalDenied):
-					reason = ErrApprovalDenied.Error()
-				case errors.Is(aerr, ErrApprovalCancelled):
-					reason = ErrApprovalCancelled.Error()
-				case errors.Is(aerr, ErrCoreUnavailable):
-					status, reason = 503, ErrCoreUnavailable.Error()
-				}
-				r := refuse(status, reason, na.Error())
-				r.ApprovalID = approvalID
-				return r
+				return refuseAsk(aerr, approvalID, na.Error())
 			}
-			call.Decisions, call.Approved = d.values, d.images
+			call.Decisions, call.Approved = d.values, call.Approved || d.images
 			sent, m, err = s.masker.Mask(ctx, call, body)
 		}
 		if err != nil {
@@ -189,7 +219,7 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 			row.Status = 504
 		}
 		r := wire.Fail(req.ID, row.Status, "upstream_unreachable", row.Error)
-		r.Ledger = row.ID
+		r.Ledger, r.Class, r.Masked.Mask = row.ID, row.Class, row.Mask
 		return r
 	}
 	defer func() { _ = hresp.Body.Close() }()
@@ -199,7 +229,7 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 	if err != nil || len(data) > maxResponse {
 		row.Error = "response_unreadable"
 		r := wire.Fail(req.ID, 502, "upstream_unreachable", "response unreadable or too large")
-		r.Ledger = row.ID
+		r.Ledger, r.Class, r.Masked.Mask = row.ID, row.Class, row.Mask
 		return r
 	}
 	if dest.Env != "" && hresp.StatusCode/100 == 2 && s.isGlobal(dest) {
@@ -208,16 +238,23 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 		}
 	}
 	call.RespContentType = hresp.Header.Get("Content-Type")
+	// Placeholders this gate minted come back filled in, whatever the class: those of
+	// the provider path, and those still in threads from before Outgate traffic went
+	// unmasked (the map keeps them 30 days). Nothing else in a response is touched.
 	restored, fields := s.masker.Restore(ctx, call, data)
 	row.RestoredCount = len(fields)
 	out := encodeBody(hresp.Header.Get("Content-Type"), restored)
 	out.Status = hresp.StatusCode
 	out.Headers = pickHeaders(hresp.Header)
-	out.Masked = wire.Masked{Count: row.MaskedCount, Categories: row.MaskedCategories}
+	out.Masked = wire.Masked{Count: row.MaskedCount, Categories: row.MaskedCategories, Mask: row.Mask}
 	out.Restored = fields
-	out.Ledger = row.ID
+	out.Ledger, out.Class = row.ID, row.Class
 	return out
 }
+
+// imageNeedsConsent: images from every caller but Chat (the agent, debug tools)
+// need an 08 approval before they leave.
+func imageNeedsConsent(class string) bool { return class != "chat" }
 
 func (s *Server) isGlobal(d *route.Destination) bool {
 	if d.URL == nil {

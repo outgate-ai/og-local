@@ -1,6 +1,8 @@
 // Package route turns a gate request into a destination: an https base the gate
 // may reach (global, the OIDC issuer, a learned region endpoint, an app's command
-// queue) or the on-device model socket. Everything else is refused.
+// queue, an external model provider of the phone region) or the on-device model
+// socket. Everything else is refused. Each destination has a class; the gate
+// decides masking per class.
 package route
 
 import (
@@ -27,6 +29,22 @@ const (
 	OnDevice
 )
 
+// Destination classes. Whether content to a class is masked is gate.conf's call.
+const (
+	// ClassOutgate: Outgate global, the OIDC issuer, learned regions, app tenancies.
+	ClassOutgate = "outgate"
+	// ClassOnDevice: the on-device model service (M09).
+	ClassOnDevice = "on-device"
+	// ClassProvider: an external model provider the phone region calls.
+	ClassProvider = "provider"
+)
+
+// Provider is an external model provider endpoint of the phone region (class provider).
+type Provider struct {
+	ID   string `json:"id"`
+	Base string `json:"base"`
+}
+
 // Destination is where one request goes.
 type Destination struct {
 	Kind Kind
@@ -39,8 +57,10 @@ type Destination struct {
 	Display string
 	// Headers are added by the gate (an app tenancy's hook token).
 	Headers map[string]string
-	// Env is the environment the destination belongs to ("" for on-device).
+	// Env is the environment the destination belongs to ("" for on-device and providers).
 	Env string
+	// Class is the destination class (ClassOutgate, ClassOnDevice, ClassProvider).
+	Class string
 }
 
 var (
@@ -58,6 +78,9 @@ type Router struct {
 	AllowHTTP []string
 	Regions   *Regions
 	Tenancies *Tenancies
+	// Providers are the phone region's external model providers, reached as
+	// "provider:<id>" or by an absolute URL on their host.
+	Providers []Provider
 }
 
 // Resolve picks the destination for absolute url u, or for path+query under regionID.
@@ -70,11 +93,13 @@ func (r *Router) Resolve(regionID, rawURL, path string, query url.Values) (*Dest
 		if len(query) > 0 {
 			u.RawQuery = mergeQuery(u.RawQuery, query)
 		}
-		env, ok := r.allowed(u)
-		if !ok {
-			return nil, fmt.Errorf("%w: %s", ErrNotAllowed, u.Host)
+		if env, ok := r.allowed(u); ok {
+			return &Destination{Kind: Cloud, URL: u, Display: u.Hostname(), Env: env, Class: ClassOutgate}, nil
 		}
-		return &Destination{Kind: Cloud, URL: u, Display: u.Hostname(), Env: env}, nil
+		if _, ok := r.provider(u); ok {
+			return &Destination{Kind: Cloud, URL: u, Display: u.Hostname(), Class: ClassProvider}, nil
+		}
+		return nil, fmt.Errorf("%w: %s", ErrNotAllowed, u.Host)
 	}
 	if !strings.HasPrefix(path, "/") && !strings.HasPrefix(path, "?") {
 		path = "/" + path
@@ -84,7 +109,9 @@ func (r *Router) Resolve(regionID, rawURL, path string, query url.Values) (*Dest
 		if r.ModelSocket == "" {
 			return nil, fmt.Errorf("%w: on-device model", ErrNotAllowed)
 		}
-		return &Destination{Kind: OnDevice, Socket: r.ModelSocket, Path: path + encode(query), Display: "on-device model"}, nil
+		return &Destination{Kind: OnDevice, Socket: r.ModelSocket, Path: path + encode(query), Display: "on-device model", Class: ClassOnDevice}, nil
+	case strings.HasPrefix(regionID, "provider:"):
+		return r.providerPath(strings.TrimPrefix(regionID, "provider:"), path, query)
 	case strings.HasPrefix(regionID, "appq:"):
 		return r.tenancy(strings.TrimPrefix(regionID, "appq:"), path, query)
 	case regionID == "global" || regionID == "oidc" || regionID == "":
@@ -117,7 +144,52 @@ func (r *Router) join(base, path string, query url.Values, env string) (*Destina
 	if _, ok := r.allowed(u); !ok {
 		return nil, fmt.Errorf("%w: %s", ErrNotAllowed, u.Host)
 	}
-	return &Destination{Kind: Cloud, URL: u, Display: u.Hostname(), Env: env}, nil
+	return &Destination{Kind: Cloud, URL: u, Display: u.Hostname(), Env: env, Class: ClassOutgate}, nil
+}
+
+func (r *Router) providerPath(id, path string, query url.Values) (*Destination, error) {
+	var base string
+	for _, p := range r.Providers {
+		if p.ID == id {
+			base = p.Base
+			break
+		}
+	}
+	if base == "" {
+		return nil, fmt.Errorf("%w: provider:%s", ErrUnknownRegion, id)
+	}
+	u, err := url.Parse(strings.TrimRight(base, "/") + path)
+	if err != nil {
+		return nil, ErrBadURL
+	}
+	if len(query) > 0 {
+		u.RawQuery = mergeQuery(u.RawQuery, query)
+	}
+	if _, ok := r.provider(u); !ok {
+		return nil, fmt.Errorf("%w: %s", ErrNotAllowed, u.Host)
+	}
+	return &Destination{Kind: Cloud, URL: u, Display: u.Hostname(), Class: ClassProvider}, nil
+}
+
+// provider reports whether u is on a configured provider's host, over https (or
+// plain http to an AllowHTTP host), and which provider.
+func (r *Router) provider(u *url.URL) (string, bool) {
+	host := strings.ToLower(u.Hostname())
+	switch u.Scheme {
+	case "https":
+	case "http":
+		if !contains(r.AllowHTTP, host) {
+			return "", false
+		}
+	default:
+		return "", false
+	}
+	for _, p := range r.Providers {
+		if hostOf(p.Base) == host {
+			return p.ID, true
+		}
+	}
+	return "", false
 }
 
 func (r *Router) tenancy(name, path string, query url.Values) (*Destination, error) {
@@ -144,7 +216,7 @@ func (r *Router) tenancy(name, path string, query url.Values) (*Destination, err
 		return nil, fmt.Errorf("%w: %s", ErrNotAllowed, u.Host)
 	}
 	return &Destination{
-		Kind: Cloud, URL: u, Display: u.Hostname(), Env: env,
+		Kind: Cloud, URL: u, Display: u.Hostname(), Env: env, Class: ClassOutgate,
 		Headers: map[string]string{t.AuthHeader: t.Token},
 	}, nil
 }
@@ -187,6 +259,18 @@ func (r *Router) env(id string) *Environment {
 		}
 	}
 	return nil
+}
+
+// IsOutgateHost reports whether host is an environment's global or OIDC host
+// (debuggable-only environments included), whatever the build.
+func (r *Router) IsOutgateHost(host string) bool {
+	host = strings.ToLower(host)
+	for _, e := range r.Envs {
+		if hostOf(e.Global) == host || hostOf(e.OIDC) == host {
+			return true
+		}
+	}
+	return false
 }
 
 // EnvForGlobal returns the environment whose global API is at host.

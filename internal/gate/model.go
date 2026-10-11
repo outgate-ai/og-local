@@ -12,6 +12,7 @@ import (
 
 	"github.com/outgate-ai/og-local/internal/gate/ledger"
 	"github.com/outgate-ai/og-local/internal/gate/peer"
+	"github.com/outgate-ai/og-local/internal/gate/route"
 )
 
 type credKey struct{}
@@ -83,6 +84,7 @@ func (s *Server) modelHandler(proxy *httputil.ReverseProxy) http.Handler {
 			Method: r.Method, PathClass: r.URL.Path, Kind: "llm", Status: cw.status(),
 			BytesOut: in.n.Load(), BytesOutRaw: in.n.Load(), BytesIn: cw.n.Load(),
 			Content: in.n.Load() > 0, OnDevice: true, Mode: string(s.cfg.Mode),
+			Class: route.ClassOnDevice, Mask: MaskNotRequired,
 		})
 	})
 }

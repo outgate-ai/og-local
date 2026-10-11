@@ -60,6 +60,9 @@ func New(cfg *Config, opts *Options) (*Server, error) {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	files, err := ledger.NewFiles(cfg.DataDir+"/ledger", cfg.ledgerRetention(), func(err error) {
 		log.Warn("ledger write failed", "err", err)
 	})
@@ -88,6 +91,7 @@ func New(cfg *Config, opts *Options) (*Server, error) {
 			AllowHTTP: cfg.AllowHTTP,
 			Regions:   route.NewRegions(cfg.DataDir+"/state/regions.json", cfg.regionTTL()),
 			Tenancies: route.NewTenancies(cfg.DataDir + "/appq"),
+			Providers: cfg.Providers(),
 		},
 		client:   &http.Client{Transport: tr, CheckRedirect: noRedirects},
 		model:    &http.Client{Transport: unixTransport(cfg.ModelSocket), CheckRedirect: noRedirects},
@@ -211,14 +215,32 @@ func (s *Server) SetHealth(key string, v any) {
 	s.health[key] = v
 }
 
+// DetectorNotNeeded is the gate's state while no destination needs masking.
+const DetectorNotNeeded = "detector not needed (no external providers)"
+
+// MaskingState says whether masked content can leave now. Without a destination
+// that needs masking it is ready, and the detector is never probed or loaded.
+func (s *Server) MaskingState() (needed, ready bool, reason string) {
+	if !s.cfg.MaskingNeeded() {
+		return false, true, DetectorNotNeeded
+	}
+	ready, reason = s.masker.Ready()
+	return true, ready, reason
+}
+
 func (s *Server) healthResponse(class string) *wire.Response {
-	ready, why := s.masker.Ready()
+	needed, ready, why := s.MaskingState()
 	h := map[string]any{
 		"version":  s.cfg.Version,
 		"mode":     s.cfg.Mode,
 		"uptime_s": int64(time.Since(s.started).Seconds()),
-		"content":  map[string]any{"ready": ready, "reason": why},
-		"today":    s.ring.Totals(),
+		// content: whether content to a masked class can leave now; traffic to Outgate
+		// and the on-device model never waits for the detector.
+		"content": map[string]any{"ready": ready, "reason": why},
+		"masking": map[string]any{
+			"needed": needed, "classes": s.cfg.MaskingClasses(), "providers": len(s.cfg.Providers()),
+		},
+		"today": s.ring.Totals(),
 	}
 	s.mu.Lock()
 	for k, v := range s.health {
