@@ -26,7 +26,7 @@ type Server struct {
 	log     *slog.Logger
 	router  *route.Router
 	client  *http.Client
-	model   *http.Client
+	models  map[string]*modelInstance
 	masker  Masker
 	ledger  ledger.Sink
 	ring    *ledger.Ring
@@ -91,14 +91,14 @@ func New(cfg *Config, opts *Options) (*Server, error) {
 	s := &Server{
 		cfg: cfg, log: log, masker: masker, ledger: sinks, ring: ring, started: time.Now(),
 		router: &route.Router{
-			Envs: cfg.Environments, Debuggable: cfg.Debuggable, ModelSocket: cfg.ModelSocket,
+			Envs: cfg.Environments, Debuggable: cfg.Debuggable, ModelSocket: cfg.Models()[DefaultModel],
 			AllowHTTP: cfg.AllowHTTP,
 			Regions:   route.NewRegions(cfg.DataDir+"/state/regions.json", cfg.regionTTL()),
 			Tenancies: route.NewTenancies(cfg.DataDir + "/appq"),
 			Providers: cfg.Providers(),
 		},
 		client:   &http.Client{Transport: tr, CheckRedirect: noRedirects},
-		model:    &http.Client{Transport: unixTransport(cfg.ModelSocket), CheckRedirect: noRedirects},
+		models:   newModels(cfg.Models()),
 		health:   map[string]any{},
 		healthFn: opts.Health,
 		asks:     newAsks(opts.Approver),

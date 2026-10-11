@@ -1,18 +1,27 @@
 package gate
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"slices"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/outgate-ai/og-local/internal/gate/ledger"
 	"github.com/outgate-ai/og-local/internal/gate/peer"
 	"github.com/outgate-ai/og-local/internal/gate/route"
+	"github.com/outgate-ai/og-local/internal/gate/wire"
 )
 
 type credKey struct{}
@@ -20,20 +29,131 @@ type credKey struct{}
 // modelPaths is the OpenAI-compatible surface OGChat's on-device region uses.
 var modelPaths = map[string]bool{"/health": true, "/v1/models": true, "/v1/chat/completions": true}
 
+// modelListTimeout bounds each instance's answer to an aggregated GET /v1/models.
+const modelListTimeout = 2 * time.Second
+
+var errNoModelAnswered = errors.New("no on-device model answered")
+
+// modelInstance is one llama.cpp server of the on-device model service, by alias.
+type modelInstance struct {
+	socket string
+	// display is the ledger destination: "on-device model" for og-local, "on-device/<alias>" otherwise.
+	display string
+	client  *http.Client
+	proxy   *httputil.ReverseProxy
+}
+
+func newModels(sockets map[string]string) map[string]*modelInstance {
+	target, _ := url.Parse("http://on-device")
+	out := make(map[string]*modelInstance, len(sockets))
+	for alias, socket := range sockets {
+		tr := unixTransport(socket)
+		proxy := httputil.NewSingleHostReverseProxy(target)
+		proxy.Transport = tr
+		proxy.FlushInterval = -1
+		proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
+			http.Error(w, `{"error":"model_unreachable"}`, http.StatusBadGateway)
+		}
+		display := "on-device model"
+		if alias != DefaultModel {
+			display = "on-device/" + alias
+		}
+		out[alias] = &modelInstance{
+			socket: socket, display: display, proxy: proxy,
+			client: &http.Client{Transport: tr, CheckRedirect: noRedirects},
+		}
+	}
+	return out
+}
+
+// modelFor picks the instance a request is for: a POST names it in its JSON body's
+// "model", anything else with ?model=; naming none is og-local.
+func (s *Server) modelFor(method string, query url.Values, body []byte) (*modelInstance, error) {
+	alias := query.Get("model")
+	if method == http.MethodPost {
+		var err error
+		if alias, err = bodyModel(body); err != nil {
+			return nil, err
+		}
+	}
+	if alias == "" {
+		alias = DefaultModel
+	}
+	if m, ok := s.models[alias]; ok {
+		return m, nil
+	}
+	return nil, fmt.Errorf("no model %.64q (%s)", alias, strings.Join(slices.Sorted(maps.Keys(s.models)), ", "))
+}
+
+// bodyModel is the top-level "model" of a JSON object body; "" when the body isn't
+// one or names none.
+func bodyModel(body []byte) (string, error) {
+	var b map[string]json.RawMessage
+	if json.Unmarshal(body, &b) != nil || b["model"] == nil || string(b["model"]) == "null" {
+		return "", nil
+	}
+	var alias string
+	if err := json.Unmarshal(b["model"], &alias); err != nil {
+		return "", errors.New("model is not a string")
+	}
+	return alias, nil
+}
+
+// aggregatesModels: GET /v1/models lists every instance's models when there are several.
+func (s *Server) aggregatesModels(method, path string) bool {
+	return method == http.MethodGet && path == "/v1/models" && len(s.models) > 1
+}
+
+// modelList asks every instance for GET /v1/models at once and joins their "data"
+// in one OpenAI list. Instances that don't answer 200 in time are left out.
+func (s *Server) modelList(ctx context.Context) ([]byte, error) {
+	aliases := slices.Sorted(maps.Keys(s.models))
+	lists := make([][]json.RawMessage, len(aliases))
+	answered := make([]bool, len(aliases))
+	var wg sync.WaitGroup
+	for i, alias := range aliases {
+		wg.Go(func() { lists[i], answered[i] = s.models[alias].list(ctx) })
+	}
+	wg.Wait()
+	if !slices.Contains(answered, true) {
+		return nil, errNoModelAnswered
+	}
+	data := []json.RawMessage{}
+	for _, l := range lists {
+		data = append(data, l...)
+	}
+	return json.Marshal(map[string]any{"object": "list", "data": data})
+}
+
+func (m *modelInstance) list(ctx context.Context) ([]json.RawMessage, bool) {
+	ctx, cancel := context.WithTimeout(ctx, modelListTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://on-device/v1/models", nil)
+	if err != nil {
+		return nil, false
+	}
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return nil, false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var l struct {
+		Data []json.RawMessage `json:"data"`
+	}
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&l) != nil {
+		return nil, false
+	}
+	return l.Data, true
+}
+
 // ServeModel fronts the on-device model service (M09) on its own socket with the
 // same HTTP API, so on-device requests are recorded too ("nothing left the device").
-// Responses stream through unchanged. The model manager may only GET /health and
-// /v1/models.
+// Each request goes to the instance it names (the body's "model", or ?model=);
+// GET /v1/models lists them all. Responses stream through unchanged. The model
+// manager may only GET /health and /v1/models.
 func (s *Server) ServeModel(ctx context.Context, ln net.Listener) error {
-	target, _ := url.Parse("http://on-device")
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	proxy.Transport = unixTransport(s.cfg.ModelSocket)
-	proxy.FlushInterval = -1
-	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
-		http.Error(w, `{"error":"model_unreachable"}`, http.StatusBadGateway)
-	}
 	srv := &http.Server{
-		Handler:           s.modelHandler(proxy),
+		Handler:           s.modelHandler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
 			if uc, ok := c.(*net.UnixConn); ok {
@@ -57,7 +177,7 @@ func (s *Server) ServeModel(ctx context.Context, ln net.Listener) error {
 	return err
 }
 
-func (s *Server) modelHandler(proxy *httputil.ReverseProxy) http.Handler {
+func (s *Server) modelHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cred, _ := r.Context().Value(credKey{}).(peer.Cred)
 		class := s.classify(cred)
@@ -74,8 +194,38 @@ func (s *Server) modelHandler(proxy *httputil.ReverseProxy) http.Handler {
 			http.Error(w, `{"error":"not_found"}`, http.StatusNotFound)
 			return
 		}
+		if s.aggregatesModels(r.Method, r.URL.Path) {
+			list, err := s.modelList(r.Context())
+			if err != nil {
+				http.Error(w, `{"error":"model_unreachable"}`, http.StatusBadGateway)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(list)
+			return
+		}
+		var body []byte
+		if r.Method == http.MethodPost {
+			b, err := io.ReadAll(io.LimitReader(r.Body, wire.MaxLine+1))
+			if err != nil {
+				http.Error(w, `{"error":"bad_body"}`, http.StatusBadRequest)
+				return
+			}
+			if len(b) > wire.MaxLine {
+				http.Error(w, `{"error":"body_too_large"}`, http.StatusRequestEntityTooLarge)
+				return
+			}
+			body = b
+			r.Body, r.ContentLength, r.TransferEncoding = io.NopCloser(bytes.NewReader(b)), int64(len(b)), nil
+		}
+		m, err := s.modelFor(r.Method, r.URL.Query(), body)
+		if err != nil {
+			e, _ := json.Marshal(map[string]string{"error": "unknown_model", "detail": err.Error()})
+			http.Error(w, string(e), http.StatusNotFound)
+			return
+		}
 		if r.URL.Path == "/health" || r.URL.Path == "/v1/models" {
-			proxy.ServeHTTP(w, r)
+			m.proxy.ServeHTTP(w, r)
 			return
 		}
 		start := time.Now()
@@ -83,10 +233,10 @@ func (s *Server) modelHandler(proxy *httputil.ReverseProxy) http.Handler {
 		r.Body = in
 		cw := &countingWriter{ResponseWriter: w}
 		r.Header.Del("Cookie")
-		proxy.ServeHTTP(cw, r)
+		m.proxy.ServeHTTP(cw, r)
 		s.ledger.Record(&ledger.Row{
 			ID: s.nextID(), Time: start.UTC(), DurationMs: time.Since(start).Milliseconds(),
-			Caller: class, UID: cred.UID, RegionID: "on-device", Destination: "on-device model",
+			Caller: class, UID: cred.UID, RegionID: "on-device", Destination: m.display,
 			Method: r.Method, PathClass: r.URL.Path, Kind: "llm", Status: cw.status(),
 			BytesOut: in.n.Load(), BytesOutRaw: in.n.Load(), BytesIn: cw.n.Load(),
 			Content: in.n.Load() > 0, OnDevice: true, Mode: string(s.cfg.Mode),

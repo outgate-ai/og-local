@@ -143,6 +143,19 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 	row.Content = call.Content
 	row.BytesOutRaw = int64(len(body))
 
+	// On-device requests go to the model instance they name; GET /v1/models lists them all.
+	var model *modelInstance
+	if row.OnDevice {
+		p, rawQuery, _ := strings.Cut(dest.Path, "?")
+		if !s.aggregatesModels(method, p) {
+			q, _ := url.ParseQuery(rawQuery)
+			if model, err = s.modelFor(method, q, body); err != nil {
+				return refuse(404, "unknown_model", err.Error())
+			}
+			row.Destination, dest.Socket = model.display, model.socket
+		}
+	}
+
 	// Images and screenshots an agent sends leave only with the user's approval
 	// (decision #18), whatever the destination's masking: this is consent, not
 	// anonymization. What the user attaches in Chat passes: they chose to send it.
@@ -210,11 +223,21 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 	if err != nil {
 		return refuse(400, "bad_request", err.Error())
 	}
-	client := s.client
-	if row.OnDevice {
-		client = s.model
+	var hresp *http.Response
+	switch {
+	case row.OnDevice && model == nil:
+		var list []byte
+		if list, err = s.modelList(cctx); err == nil {
+			hresp = &http.Response{
+				StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}},
+				Body: io.NopCloser(bytes.NewReader(list)),
+			}
+		}
+	case row.OnDevice:
+		hresp, err = model.client.Do(hreq)
+	default:
+		hresp, err = s.client.Do(hreq)
 	}
-	hresp, err := client.Do(hreq)
 	if err != nil {
 		row.Error = errClass(err)
 		row.Status = 502

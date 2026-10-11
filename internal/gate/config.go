@@ -17,8 +17,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"os"
+	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -86,7 +90,10 @@ type Config struct {
 	Classes     []ClassRule  `json:"classes,omitempty"`
 	Callers     []CallerRule `json:"callers"`
 	ModelSocket string       `json:"model_socket"`
-	AllowHTTP   []string     `json:"allow_http,omitempty"`
+	// ModelSockets maps each on-device model alias to its llama.cpp server's socket
+	// (M14: og-local, og-local-agent). Absent: model_socket serves og-local.
+	ModelSockets map[string]string `json:"model_sockets,omitempty"`
+	AllowHTTP    []string          `json:"allow_http,omitempty"`
 	// UploadDirs are where callers' upload files may live (og-agentd's tmp/).
 	UploadDirs []string `json:"upload_dirs,omitempty"`
 	// PackagesList is packages.list, for package caller rules (default: Android's).
@@ -118,8 +125,11 @@ func LoadConfig(path string) (Config, error) {
 // Validate checks the destination classes: known names, each once, the on-device
 // model and the model mirror never masked, endpoints only for providers, and a
 // provider never on one of Outgate's own hosts (Outgate traffic must not become
-// maskable by a typo).
+// maskable by a typo). It checks the model sockets too.
 func (c *Config) Validate() error {
+	if err := c.validateModels(); err != nil {
+		return err
+	}
 	seen := map[string]bool{}
 	for _, r := range c.Classes {
 		switch r.Class {
@@ -155,6 +165,47 @@ func (c *Config) Validate() error {
 					return fmt.Errorf("classes: provider %q is on Outgate's own host %s", d.ID, u.Hostname())
 				}
 			}
+		}
+	}
+	return nil
+}
+
+// DefaultModel is the alias a request that names no model goes to (M09's outgate-model).
+const DefaultModel = "og-local"
+
+var modelAlias = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+
+// Models maps each on-device model alias to its socket: model_sockets, else
+// model_socket as og-local.
+func (c *Config) Models() map[string]string {
+	if len(c.ModelSockets) > 0 {
+		return c.ModelSockets
+	}
+	if c.ModelSocket != "" {
+		return map[string]string{DefaultModel: c.ModelSocket}
+	}
+	return nil
+}
+
+// validateModels: model_sockets names og-local, model_socket is that same socket
+// or absent, aliases are plain names and sockets absolute paths.
+func (c *Config) validateModels() error {
+	if len(c.ModelSockets) > 0 {
+		def, ok := c.ModelSockets[DefaultModel]
+		if !ok {
+			return fmt.Errorf("model_sockets: no %q (the default model)", DefaultModel)
+		}
+		if c.ModelSocket != "" && c.ModelSocket != def {
+			return fmt.Errorf("model_socket %q is not model_sockets %q (%q)", c.ModelSocket, DefaultModel, def)
+		}
+	}
+	models := c.Models()
+	for _, alias := range slices.Sorted(maps.Keys(models)) {
+		if !modelAlias.MatchString(alias) {
+			return fmt.Errorf("model_sockets: bad alias %q", alias)
+		}
+		if !filepath.IsAbs(models[alias]) {
+			return fmt.Errorf("model_sockets: %q: socket %q is not an absolute path", alias, models[alias])
 		}
 	}
 	return nil

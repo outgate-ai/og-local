@@ -25,7 +25,8 @@ type Row struct {
 	AccountID  string    `json:"account_id,omitempty"`
 	RegionID   string    `json:"region_id,omitempty"`
 	Adapter    string    `json:"adapter,omitempty"`
-	// Destination is the display host ("api.outgate.ai") or "on-device model".
+	// Destination is the display host ("api.outgate.ai"), "on-device model" (og-local)
+	// or "on-device/<alias>" (another on-device model instance).
 	Destination string `json:"destination"`
 	// Class is the destination class: outgate, on-device, provider or mirror ("" when refused before routing).
 	Class  string `json:"class,omitempty"`
