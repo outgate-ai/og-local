@@ -15,8 +15,10 @@ import (
 	"github.com/outgate-ai/og-local/internal/detector"
 	"github.com/outgate-ai/og-local/internal/gate"
 	"github.com/outgate-ai/og-local/internal/gate/alog"
+	"github.com/outgate-ai/og-local/internal/gate/corelink"
 	"github.com/outgate-ai/og-local/internal/gate/mask"
 	"github.com/outgate-ai/og-local/internal/gate/sysprop"
+	"github.com/outgate-ai/og-local/internal/models"
 	"github.com/outgate-ai/og-local/internal/pii"
 )
 
@@ -42,6 +44,7 @@ func runServe(args []string) int {
 	mode := fs.String("mode", "", "passthrough or mask")
 	ceDir := fs.String("ce-dir", "/data/misc_ce/0/outgate-gate", "credential-encrypted dir for the placeholder map")
 	model := fs.String("model", "openai/privacy-filter-q4", "detector model (og-local catalog name)")
+	linkPath := fs.String("link", "/system_ext/bin/og-gate-link", "OG Core binder helper (\"\" for none)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -55,26 +58,51 @@ func runServe(args []string) int {
 	cfg.DataDir = *data
 	cfg.Version = version
 	cfg.Debuggable = sysprop.Bool("ro.debuggable", false)
-	m := gate.Mode(*mode)
-	if m == "" {
-		m = gate.Mode(sysprop.Get("persist.outgate.gate.mode", string(gate.Mask)))
+	gm := gate.Mode(*mode)
+	if gm == "" {
+		gm = gate.Mode(sysprop.Get("persist.outgate.gate.mode", string(gate.Mask)))
 	}
-	if m != gate.Passthrough || !cfg.Debuggable {
-		if m == gate.Passthrough {
+	if gm != gate.Passthrough || !cfg.Debuggable {
+		if gm == gate.Passthrough {
 			log.Warn("passthrough refused on a non-debuggable build; masking")
 		}
-		m = gate.Mask
+		gm = gate.Mask
 	}
-	cfg.Mode = m
+	cfg.Mode = gm
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+	defer stop()
 
 	opts := gate.Options{Logger: log}
+	var m *mask.Masker
 	if cfg.Mode == gate.Mask {
-		m := newMasker(*ceDir, *model, log)
+		m = newMasker(*ceDir, *model, log)
 		defer m.Detector.Close()
 		opts.Masker = m
-		opts.Health = func() map[string]any {
-			return map[string]any{"detector": m.Detector.Stats(), "map": mapHealth(m)}
+	}
+	var link *corelink.Link
+	if *linkPath != "" {
+		if _, err := os.Stat(*linkPath); err == nil {
+			link = &corelink.Link{Path: *linkPath, Log: log, H: corelink.Handlers{
+				Policy: func(rules []corelink.Rule) {
+					if m != nil {
+						m.SetPolicy(policyFrom(rules))
+						log.Info("masking policy from OG Core", "rules", len(rules))
+					}
+				},
+			}}
+			opts.Sinks = append(opts.Sinks, link)
+			link.Start(ctx)
+		} else {
+			log.Warn("no OG Core link", "path", *linkPath, "err", err)
 		}
+	}
+	opts.Health = func() map[string]any {
+		h := map[string]any{"core": map[string]any{"attached": link != nil && link.Up()}}
+		if m != nil {
+			h["detector"], h["map"] = m.Detector.Stats(), mapHealth(m)
+		}
+		return h
 	}
 	srv, err := gate.New(&cfg, opts)
 	if err != nil {
@@ -86,8 +114,9 @@ func runServe(args []string) int {
 		log.Error("socket", "err", err)
 		return 1
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
-	defer stop()
+	if link != nil {
+		go reportHealth(ctx, link, m)
+	}
 
 	errc := make(chan error, 2)
 	if mln, err := openListener(*modelListen, *modelSocket); err == nil {
@@ -128,7 +157,63 @@ func newMasker(ceDir, model string, log *slog.Logger) *mask.Masker {
 			return closeFn()
 		}, nil
 	}
-	return mask.New(mask.NewStore(ceDir, 30*24*time.Hour, 50000), mask.NewDetector(load, idle))
+	det := mask.NewDetector(load, idle)
+	det.Present = func() error {
+		mdl, ok := models.Lookup(model)
+		if !ok {
+			return fmt.Errorf("unknown model %s", model)
+		}
+		if !models.IsCached(models.OSFS(), models.ModelDir(models.CacheRoot(), mdl), mdl) {
+			return fmt.Errorf("model not provisioned")
+		}
+		return nil
+	}
+	return mask.New(mask.NewStore(ceDir, 30*24*time.Hour, 50000), det)
+}
+
+// reportHealth keeps OG Core's gate dot current: red with the reason while content
+// can't be masked (decision: the dot and Settings say why chat can't send).
+func reportHealth(ctx context.Context, link *corelink.Link, m *mask.Masker) {
+	t := time.NewTicker(5 * time.Second)
+	defer t.Stop()
+	for {
+		connected, detail := true, "passthrough (debug build): content is not masked"
+		if m != nil {
+			connected, detail = true, "masking"
+			if ok, why := m.Ready(); !ok {
+				connected, detail = false, healthDetail(why, m)
+			}
+		}
+		link.ReportHealth(connected, detail)
+		select {
+		case <-ctx.Done():
+			link.ReportHealth(false, "gate stopped")
+			return
+		case <-t.C:
+		}
+	}
+}
+
+func healthDetail(reason string, m *mask.Masker) string {
+	switch reason {
+	case mask.ErrLocked.Error():
+		return "Unlock the phone once: the gate's storage is still locked"
+	case mask.ErrDetectorUnavailable.Error():
+		if r := m.Detector.Reason(); r != "" {
+			return "The gate's detector isn't available (" + r + "), so nothing with content can leave"
+		}
+		return "The gate's detector isn't available, so nothing with content can leave"
+	}
+	return reason
+}
+
+// policyFrom maps OG Core's rules onto the masker's policy; unknown values keep the defaults.
+func policyFrom(rules []corelink.Rule) mask.Policy {
+	m := map[mask.Category]mask.Action{}
+	for _, r := range rules {
+		m[mask.Category(r.Category)] = mask.Action(r.Action)
+	}
+	return mask.DefaultPolicy().Merge(m)
 }
 
 func mapHealth(m *mask.Masker) map[string]any {

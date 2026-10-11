@@ -23,6 +23,8 @@ type Detector struct {
 	load Loader
 	idle time.Duration
 	now  func() time.Time
+	// Present, when set, says cheaply (without loading) whether the model is there.
+	Present func() error
 
 	mu       sync.Mutex
 	pipe     *redact.Pipeline
@@ -138,10 +140,26 @@ func (d *Detector) unload() {
 func (d *Detector) Usable() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.pipe == nil && !d.failedAt.IsZero() && d.now().Sub(d.failedAt) < retryAfterFailure {
+	if d.pipe != nil {
+		return nil
+	}
+	if !d.failedAt.IsZero() && d.now().Sub(d.failedAt) < retryAfterFailure {
 		return ErrDetectorUnavailable
 	}
+	if d.Present != nil {
+		if err := d.Present(); err != nil {
+			d.stats.Error = err.Error()
+			return ErrDetectorUnavailable
+		}
+	}
 	return nil
+}
+
+// Reason is the last load or presence error, for the gate dot's detail.
+func (d *Detector) Reason() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.stats.Error
 }
 
 func (d *Detector) Stats() DetectorStats {
