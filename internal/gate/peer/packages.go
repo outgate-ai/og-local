@@ -30,6 +30,14 @@ func (p *Packages) Err() error {
 	return p.err
 }
 
+// Check reads the list now (if it changed) and reports whether it is readable.
+func (p *Packages) Check() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.refresh()
+	return p.err
+}
+
 // DefaultPackagesList is where Android keeps it.
 const DefaultPackagesList = "/data/system/packages.list"
 

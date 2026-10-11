@@ -115,6 +115,7 @@ func runServe(args []string) int {
 		log.Error("start", "err", err)
 		return 1
 	}
+	_ = srv.CheckCallers()
 	if link != nil {
 		link.Start(ctx)
 	}

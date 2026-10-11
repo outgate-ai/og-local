@@ -510,3 +510,26 @@ func TestCallerByPackage(t *testing.T) {
 		t.Errorf("chat: %v", resp)
 	}
 }
+
+func TestUnreadablePackagesListIsReported(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads any file; peer.TestPackagesListUnreadableByTheGate covers it as another uid")
+	}
+	uid := uint32(os.Getuid()) //nolint:gosec // uids fit uint32
+	h := start(t, Passthrough, func(c *Config) {
+		c.Callers = []CallerRule{{Package: "ai.outgate.chat", Class: "chat"}, {UID: &uid, Class: "debug"}}
+	})
+	list := filepath.Join(h.dir, "packages.list")
+	if err := os.WriteFile(list, []byte(fmt.Sprintf("ai.outgate.chat %d 0 /x platform 3003\n", uid)), 0o040); err != nil { //nolint:gosec // unreadable on purpose
+		t.Fatal(err)
+	}
+	h.srv.packages.Path = list
+	if err := h.srv.CheckCallers(); err == nil {
+		t.Error("CheckCallers accepted an unreadable list")
+	}
+	resp := h.call(`{"op":"health"}`)
+	body := resp["body"].(map[string]any)
+	if got, _ := body["packages_list"].(string); !strings.Contains(got, "permission denied") {
+		t.Errorf("health packages_list = %v", body["packages_list"])
+	}
+}

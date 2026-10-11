@@ -230,6 +230,12 @@ func (s *Server) healthResponse(class string) *wire.Response {
 			h[k] = v
 		}
 	}
+	if s.packageRules() {
+		h["packages_list"] = "ok"
+		if err := s.packages.Check(); err != nil {
+			h["packages_list"] = err.Error()
+		}
+	}
 	if class == "debug" {
 		h["regions"] = s.router.Regions.All()
 		h["tenancies"] = s.router.Tenancies.Names()
@@ -253,6 +259,29 @@ func closeFDs(fds []int) {
 	for _, fd := range fds {
 		_ = syscall.Close(fd)
 	}
+}
+
+// packageRules reports whether a caller rule needs packages.list.
+func (s *Server) packageRules() bool {
+	for _, r := range s.cfg.Callers {
+		if r.Package != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// CheckCallers logs, at start, a packages.list the gate can't read while a caller
+// rule needs it: every such caller would be refused.
+func (s *Server) CheckCallers() error {
+	if !s.packageRules() {
+		return nil
+	}
+	if err := s.packages.Check(); err != nil {
+		s.log.Error("packages.list unreadable: callers admitted by package will be refused", "err", err)
+		return err
+	}
+	return nil
 }
 
 func contains(list []string, s string) bool {
