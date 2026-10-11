@@ -22,7 +22,8 @@ var modelPaths = map[string]bool{"/health": true, "/v1/models": true, "/v1/chat/
 
 // ServeModel fronts the on-device model service (M09) on its own socket with the
 // same HTTP API, so on-device requests are recorded too ("nothing left the device").
-// Responses stream through unchanged.
+// Responses stream through unchanged. The model manager may only GET /health and
+// /v1/models.
 func (s *Server) ServeModel(ctx context.Context, ln net.Listener) error {
 	target, _ := url.Parse("http://on-device")
 	proxy := httputil.NewSingleHostReverseProxy(target)
@@ -61,6 +62,11 @@ func (s *Server) modelHandler(proxy *httputil.ReverseProxy) http.Handler {
 		cred, _ := r.Context().Value(credKey{}).(peer.Cred)
 		class := s.classify(cred)
 		if class == "" {
+			http.Error(w, `{"error":"caller_not_allowed"}`, http.StatusForbidden)
+			return
+		}
+		// The model manager only watches the model service load.
+		if class == callerModels && (r.Method != http.MethodGet || (r.URL.Path != "/health" && r.URL.Path != "/v1/models")) {
 			http.Error(w, `{"error":"caller_not_allowed"}`, http.StatusForbidden)
 			return
 		}

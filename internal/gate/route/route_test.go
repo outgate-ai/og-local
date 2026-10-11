@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -161,5 +162,58 @@ func TestDestinationClasses(t *testing.T) {
 	}
 	if _, err := r.Resolve("provider:other", "", "/x", nil); !errors.Is(err, ErrUnknownRegion) {
 		t.Errorf("unknown provider: %v", err)
+	}
+}
+
+func TestMirror(t *testing.T) {
+	r := testRouter(t)
+	r.AllowHTTP = []string{"mirror.localhost"}
+	bases := map[string]error{
+		"":                                  ErrNoMirror,
+		"https://models.example.test":       nil,
+		"https://models.example.test/m/":    nil,
+		"HTTPS://models.example.test/m":     nil,
+		"http://mirror.localhost:8080/m":    nil,
+		"http://models.example.test/m":      ErrMirrorNotHTTPS,
+		"ftp://models.example.test/m":       ErrMirrorNotHTTPS,
+		"models.example.test/m":             ErrMirrorURL,
+		"https://user@models.example.test/": ErrMirrorURL,
+		"https://models.example.test/m?k=v": ErrMirrorURL,
+		"https://models.example.test/m?":    ErrMirrorURL,
+		"https://models.example.test/m#x":   ErrMirrorURL,
+		"https:models.example.test":         ErrMirrorURL,
+		"https://":                          ErrMirrorURL,
+	}
+	for raw, want := range bases {
+		if _, err := r.MirrorBase(raw); !errors.Is(err, want) {
+			t.Errorf("MirrorBase(%q) = %v, want %v", raw, err, want)
+		}
+	}
+	for base, want := range map[string]string{
+		"https://models.example.test":     "https://models.example.test/embeddinggemma-2/740m/model.litertlm",
+		"https://models.example.test/m":   "https://models.example.test/m/embeddinggemma-2/740m/model.litertlm",
+		"https://models.example.test/m//": "https://models.example.test/m/embeddinggemma-2/740m/model.litertlm",
+	} {
+		b, err := r.MirrorBase(base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		d, err := Mirror(b, "embeddinggemma-2/740m/model.litertlm")
+		if err != nil || d.URL.String() != want || d.Class != ClassMirror || d.Display != "models.example.test" || d.Env != "" {
+			t.Errorf("%s: %+v %v", base, d, err)
+		}
+	}
+	b, _ := r.MirrorBase("https://models.example.test/m")
+	if d, err := Mirror(b, "voice/e2b/Model_E2B-it@q4+v2.1.gguf"); err != nil || d.URL.Path != "/m/voice/e2b/Model_E2B-it@q4+v2.1.gguf" {
+		t.Errorf("all allowed characters: %+v %v", d, err)
+	}
+	for _, bad := range []string{
+		"", "/abs/model.bin", "../model.bin", "a/../b.bin", "a/./b.bin", "a//b.bin", "dir/", "..",
+		"model.bin?x=1", "model.bin#f", `a\b.bin`, "a b.bin", "a%2e%2e/b.bin", "a:b.bin", "a/~b.bin",
+		strings.Repeat("a", 1025),
+	} {
+		if _, err := Mirror(b, bad); !errors.Is(err, ErrBadPath) {
+			t.Errorf("Mirror(%q): %v", bad, err)
+		}
 	}
 }

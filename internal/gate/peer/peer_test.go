@@ -8,10 +8,11 @@ import (
 
 func TestDomain(t *testing.T) {
 	cases := map[string]string{
-		"u:r:outgate_agent:s0":          "outgate_agent",
-		"u:r:platform_app:s0:c512,c768": "platform_app",
-		"":                              "",
-		"unconfined":                    "",
+		"u:r:outgate_agent:s0":                 "outgate_agent",
+		"u:r:platform_app:s0:c512,c768":        "platform_app",
+		"u:r:og_models:s0:c149,c256,c512,c768": "og_models",
+		"":                                     "",
+		"unconfined":                           "",
 	}
 	for ctx, want := range cases {
 		if got := (Cred{Context: ctx}).Domain(); got != want {

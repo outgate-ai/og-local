@@ -36,7 +36,8 @@ type Egress struct {
 type Request struct {
 	V  int    `json:"v,omitempty"`
 	ID string `json:"id,omitempty"`
-	// Op is empty for an upstream request; "health" and "ledger" are local.
+	// Op is empty for an upstream request; "download" fetches a model file from the
+	// mirror into a passed descriptor; "health" and "ledger" are local.
 	Op     string `json:"op,omitempty"`
 	Source Source `json:"source"`
 	Method string `json:"method,omitempty"`
@@ -57,7 +58,12 @@ type Request struct {
 	FileField string `json:"file_field,omitempty"`
 	Egress    Egress `json:"egress"`
 	// TimeoutMs is the long-poll budget; the gate answers within max(TimeoutMs, 10 s) + 2 s.
+	// For a download it is the idle timeout (at least 10 s); a download has no total timeout.
 	TimeoutMs int64 `json:"timeout_ms,omitempty"`
+	// Offset and Size are for op "download": where the caller's partial file ends, and
+	// the file's exact total size.
+	Offset *int64 `json:"offset,omitempty"`
+	Size   int64  `json:"size,omitempty"`
 	// Limit is for op "ledger".
 	Limit int `json:"limit,omitempty"`
 }
@@ -77,8 +83,10 @@ type Restored struct {
 }
 
 type Response struct {
-	V        int               `json:"v"`
-	ID       string            `json:"id,omitempty"`
+	V  int    `json:"v"`
+	ID string `json:"id,omitempty"`
+	// Op is set for a download.
+	Op       string            `json:"op,omitempty"`
 	Status   int               `json:"status"`
 	Headers  map[string]string `json:"headers,omitempty"`
 	Body     json.RawMessage   `json:"body,omitempty"`
@@ -91,11 +99,16 @@ type Response struct {
 	Detail  string `json:"detail,omitempty"`
 	// Ledger is the gate's row id for this request.
 	Ledger string `json:"ledger,omitempty"`
-	// Class is the destination's class: outgate, on-device or provider.
+	// Class is the destination's class: outgate, on-device, provider or mirror.
 	Class string `json:"class,omitempty"`
 	// ApprovalID is the 08 approval a held request waits for (refused needs_approval:
 	// send the same request again, or with egress.approval_id, after it is answered).
 	ApprovalID string `json:"approval_id,omitempty"`
+	// Start, Written and Complete report a download once it writes: the file offset it
+	// wrote from, the bytes written now, and whether the file has all its bytes.
+	Start    *int64 `json:"start,omitempty"`
+	Written  *int64 `json:"written,omitempty"`
+	Complete *bool  `json:"complete,omitempty"`
 }
 
 var ErrTooLong = errors.New("wire: request line too long")

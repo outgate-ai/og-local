@@ -27,7 +27,7 @@ type Row struct {
 	Adapter    string    `json:"adapter,omitempty"`
 	// Destination is the display host ("api.outgate.ai") or "on-device model".
 	Destination string `json:"destination"`
-	// Class is the destination class: outgate, on-device or provider ("" when refused before routing).
+	// Class is the destination class: outgate, on-device, provider or mirror ("" when refused before routing).
 	Class  string `json:"class,omitempty"`
 	Method string `json:"method"`
 	// PathClass is the path with ids replaced by ":id".

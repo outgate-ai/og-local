@@ -128,6 +128,12 @@ func start(t *testing.T, mode Mode, mutate func(*Config)) *harness {
 // startWith also takes a masker and an approver (nil: the defaults of New).
 func startWith(t *testing.T, mode Mode, mutate func(*Config), masker Masker, ap Approver) *harness {
 	t.Helper()
+	return startOpts(t, mode, mutate, masker, ap, nil)
+}
+
+// startOpts also changes the gate's options before it starts (transport, timeouts).
+func startOpts(t *testing.T, mode Mode, mutate func(*Config), masker Masker, ap Approver, options func(*Options)) *harness {
+	t.Helper()
 	up := newUpstream(t)
 	dir := t.TempDir()
 	uid := uint32(os.Getuid()) //nolint:gosec // uids fit uint32
@@ -143,7 +149,11 @@ func startWith(t *testing.T, mode Mode, mutate func(*Config), masker Masker, ap 
 		mutate(&cfg)
 	}
 	rows := &rec{}
-	srv, err := New(&cfg, &Options{Sinks: []ledger.Sink{rows}, Transport: regionDialer(up.srv.URL), Masker: masker, Approver: ap})
+	opts := &Options{Sinks: []ledger.Sink{rows}, Transport: regionDialer(up.srv.URL), Masker: masker, Approver: ap}
+	if options != nil {
+		options(opts)
+	}
+	srv, err := New(&cfg, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -445,6 +455,13 @@ func TestClassConfig(t *testing.T) {
 	if err := c.Validate(); err != nil || !c.MaskingNeeded() || c.Masks("outgate") {
 		t.Errorf("provider configured: %v needed=%v", err, c.MaskingNeeded())
 	}
+	if c.Masks("mirror") || c.MaskingClasses()["mirror"] {
+		t.Errorf("mirror masked: %v", c.MaskingClasses())
+	}
+	m := Config{Classes: []ClassRule{{Class: "outgate"}, {Class: "on-device"}, {Class: "mirror"}}}
+	if err := m.Validate(); err != nil || m.MaskingNeeded() {
+		t.Errorf("unmasked mirror class: %v needed=%v", err, m.MaskingNeeded())
+	}
 	env := []route.Environment{{ID: "prod", Global: "https://api.outgate.test", OIDC: "https://console.outgate.test"}}
 	bad := map[string][]ClassRule{
 		"unknown class":     {{Class: "region"}},
@@ -455,6 +472,8 @@ func TestClassConfig(t *testing.T) {
 			Destinations: []route.Provider{{ID: "x", Base: "https://api.outgate.test/v1"}}}},
 		"provider without id": {{Class: "provider", Destinations: []route.Provider{{Base: "https://x.test"}}}},
 		"provider bad base":   {{Class: "provider", Destinations: []route.Provider{{ID: "x", Base: "ftp://x.test"}}}},
+		"mirror masked":       {{Class: "mirror", Mask: true}},
+		"mirror endpoints":    {{Class: "mirror", Destinations: []route.Provider{{ID: "x", Base: "https://x.test"}}}},
 	}
 	for name, classes := range bad {
 		c := Config{Environments: env, Classes: classes}
@@ -823,6 +842,74 @@ func TestOnDeviceModelFront(t *testing.T) {
 	}
 	if row := h.rows.last(t); !row.OnDevice || row.Blocked {
 		t.Errorf("on-device row = %+v", row)
+	}
+}
+
+// The model manager watches the model service load through the front, and may do nothing else there.
+func TestModelFrontForModelsCaller(t *testing.T) {
+	dir := t.TempDir()
+	modelSock := filepath.Join(dir, "model.sock")
+	mln, err := net.Listen("unix", modelSock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var reached []string
+	model := &http.Server{ReadHeaderTimeout: time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		reached = append(reached, r.Method+" "+r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"status":"ok"}`)
+	})}
+	go func() { _ = model.Serve(mln) }()
+	t.Cleanup(func() { _ = model.Close() })
+
+	uid := uint32(os.Getuid()) //nolint:gosec // uids fit uint32
+	h := start(t, Mask, func(c *Config) {
+		c.ModelSocket = modelSock
+		c.Callers = []CallerRule{{UID: &uid, Class: "models"}}
+	})
+	front := filepath.Join(dir, "front.sock")
+	fln, err := ListenPath(front, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = h.srv.ServeModel(ctx, fln) }()
+	cl := &http.Client{Transport: unixTransport(front)}
+	do := func(method, path, body string) (int, string) {
+		req, _ := http.NewRequest(method, "http://x"+path, strings.NewReader(body))
+		resp, err := cl.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		return resp.StatusCode, string(b)
+	}
+	for _, p := range []string{"/health", "/v1/models"} {
+		if code, body := do("GET", p, ""); code != 200 || !strings.Contains(body, `"ok"`) {
+			t.Errorf("GET %s: %d %s", p, code, body)
+		}
+	}
+	for _, r := range [][2]string{{"POST", "/v1/chat/completions"}, {"GET", "/v1/chat/completions"}, {"POST", "/health"}, {"GET", "/slots"}} {
+		if code, body := do(r[0], r[1], `{"messages":[]}`); code != 403 || !strings.Contains(body, "caller_not_allowed") {
+			t.Errorf("%s %s: %d %s", r[0], r[1], code, body)
+		}
+	}
+	mu.Lock()
+	got := strings.Join(reached, ",")
+	mu.Unlock()
+	if got != "GET /health,GET /v1/models" {
+		t.Errorf("the model service saw %s", got)
+	}
+	h.rows.mu.Lock()
+	n := len(h.rows.rows)
+	h.rows.mu.Unlock()
+	if n != 0 {
+		t.Errorf("%d ledger rows for health checks", n)
 	}
 }
 

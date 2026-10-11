@@ -31,9 +31,10 @@ Runs the OG OS gate: one JSON request per connection on a unix socket (init's
 socket NAME, or PATH), forwarded to Outgate hosts (and the phone region's external
 model providers) only, recorded in the egress ledger under DIR/ledger. Content is
 masked only for destination classes the config marks mask (the providers); traffic
-to Outgate is not, its regions mask with their own guardrail. --mode defaults to
-persist.outgate.gate.mode, else mask; passthrough (no masking) is honoured only on
-debuggable builds.
+to Outgate is not, its regions mask with their own guardrail. Model files come
+from the model mirror (persist.outgate.models.mirror) into a descriptor the model
+manager passes. --mode defaults to persist.outgate.gate.mode, else mask;
+passthrough (no masking) is honoured only on debuggable builds.
 `
 
 func runServe(args []string) int {

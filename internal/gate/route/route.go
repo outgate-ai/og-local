@@ -37,6 +37,8 @@ const (
 	ClassOnDevice = "on-device"
 	// ClassProvider: an external model provider the phone region calls.
 	ClassProvider = "provider"
+	// ClassMirror: Outgate's model mirror, reached only by downloads (never content).
+	ClassMirror = "mirror"
 )
 
 // Provider is an external model provider endpoint of the phone region (class provider).
@@ -59,7 +61,7 @@ type Destination struct {
 	Headers map[string]string
 	// Env is the environment the destination belongs to ("" for on-device and providers).
 	Env string
-	// Class is the destination class (ClassOutgate, ClassOnDevice, ClassProvider).
+	// Class is the destination class (ClassOutgate, ClassOnDevice, ClassProvider, ClassMirror).
 	Class string
 }
 

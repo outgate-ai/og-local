@@ -39,6 +39,8 @@ type Server struct {
 	healthFn func() map[string]any
 	asks     *asks
 	packages *peer.Packages
+	// downloadIdle is the shortest idle timeout of a download.
+	downloadIdle time.Duration
 }
 
 // Options are the parts tests and the command line replace.
@@ -53,6 +55,8 @@ type Options struct {
 	Health func() map[string]any
 	// Approver raises and follows 08 approvals for "ask" (OG Core, through corelink).
 	Approver Approver
+	// DownloadIdle is the shortest idle timeout of a download (default 10 s; tests).
+	DownloadIdle time.Duration
 }
 
 func New(cfg *Config, opts *Options) (*Server, error) {
@@ -99,9 +103,14 @@ func New(cfg *Config, opts *Options) (*Server, error) {
 		healthFn: opts.Health,
 		asks:     newAsks(opts.Approver),
 		packages: &peer.Packages{Path: cfg.PackagesList},
+
+		downloadIdle: opts.DownloadIdle,
 	}
 	if s.packages.Path == "" {
 		s.packages.Path = peer.DefaultPackagesList
+	}
+	if s.downloadIdle <= 0 {
+		s.downloadIdle = downloadIdleMin
 	}
 	return s, nil
 }
@@ -165,8 +174,16 @@ func (s *Server) handle(ctx context.Context, c *net.UnixConn) {
 			s.log.Warn("caller refused", "uid", cred.UID, "domain", cred.Domain())
 		}
 		resp = wire.Refuse(req.ID, 403, "caller_not_allowed", "")
+	case class == callerModels && req.Op != "download" && req.Op != "health",
+		req.Op == "download" && class != callerModels && class != "debug":
+		s.log.Warn("op refused for caller", "class", class, "op", req.Op)
+		resp = wire.Refuse(req.ID, 403, "caller_not_allowed", "")
 	case req.Op == "":
 		resp = s.forward(ctx, class, cred, req, fds)
+	case req.Op == "download":
+		dctx, stop := untilHangup(ctx, c)
+		resp = s.download(dctx, class, cred, req, fds)
+		stop()
 	case req.Op == "health":
 		resp = s.healthResponse(class)
 	case req.Op == "ledger" && class == "debug":
@@ -240,7 +257,8 @@ func (s *Server) healthResponse(class string) *wire.Response {
 		"masking": map[string]any{
 			"needed": needed, "classes": s.cfg.MaskingClasses(), "providers": len(s.cfg.Providers()),
 		},
-		"today": s.ring.Totals(),
+		"today":  s.ring.Totals(),
+		"mirror": s.mirrorHealth(),
 	}
 	s.mu.Lock()
 	for k, v := range s.health {

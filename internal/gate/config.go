@@ -2,7 +2,8 @@
 // component sends off the phone leaves through it. It listens only on unix
 // sockets, identifies callers by uid and SELinux domain, refuses destinations
 // outside Outgate's own hosts (and the phone region's external model providers),
-// and records every request in the egress ledger.
+// and records every request in the egress ledger. The model manager downloads
+// model files from Outgate's model mirror through it, into a descriptor it passes.
 //
 // Masking is decided per destination class (gate.conf "classes"). Traffic to
 // Outgate (global, the OIDC issuer, regions, app tenancies) is not masked: the
@@ -56,13 +57,14 @@ type ClassRule struct {
 	Destinations []route.Provider `json:"destinations,omitempty"`
 }
 
-// DefaultClasses apply when gate.conf names none: Outgate and the on-device model
-// unmasked, the phone region's external providers masked (none configured).
+// DefaultClasses apply when gate.conf names none: Outgate, the on-device model and
+// the model mirror unmasked, the phone region's external providers masked (none configured).
 func DefaultClasses() []ClassRule {
 	return []ClassRule{
 		{Class: route.ClassOutgate, Mask: false},
 		{Class: route.ClassOnDevice, Mask: false},
 		{Class: route.ClassProvider, Mask: true},
+		{Class: route.ClassMirror, Mask: false},
 	}
 }
 
@@ -114,13 +116,14 @@ func LoadConfig(path string) (Config, error) {
 }
 
 // Validate checks the destination classes: known names, each once, the on-device
-// model never masked, endpoints only for providers, and a provider never on one
-// of Outgate's own hosts (Outgate traffic must not become maskable by a typo).
+// model and the model mirror never masked, endpoints only for providers, and a
+// provider never on one of Outgate's own hosts (Outgate traffic must not become
+// maskable by a typo).
 func (c *Config) Validate() error {
 	seen := map[string]bool{}
 	for _, r := range c.Classes {
 		switch r.Class {
-		case route.ClassOutgate, route.ClassOnDevice, route.ClassProvider:
+		case route.ClassOutgate, route.ClassOnDevice, route.ClassProvider, route.ClassMirror:
 		default:
 			return fmt.Errorf("classes: unknown class %q", r.Class)
 		}
@@ -130,6 +133,9 @@ func (c *Config) Validate() error {
 		seen[r.Class] = true
 		if r.Class == route.ClassOnDevice && r.Mask {
 			return errors.New("classes: the on-device model is never masked")
+		}
+		if r.Class == route.ClassMirror && r.Mask {
+			return errors.New("classes: the model mirror is never masked")
 		}
 		if len(r.Destinations) > 0 && r.Class != route.ClassProvider {
 			return fmt.Errorf("classes: %q takes no destinations", r.Class)
@@ -208,6 +214,7 @@ func (c *Config) MaskingClasses() map[string]bool {
 		route.ClassOutgate:  c.Masks(route.ClassOutgate),
 		route.ClassOnDevice: c.Masks(route.ClassOnDevice),
 		route.ClassProvider: c.Masks(route.ClassProvider),
+		route.ClassMirror:   c.Masks(route.ClassMirror),
 	}
 }
 
