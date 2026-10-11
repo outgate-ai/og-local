@@ -59,23 +59,6 @@ func (m *Masker) Ready() (ready bool, reason string) {
 	return true, ""
 }
 
-// NeedsApproval reports which categories a refused request asked about.
-type NeedsApproval struct {
-	Categories []Category
-}
-
-// NeedsApproval is gate.ErrNeedsApproval: the policy says "ask" for something in the
-// request (step 6 holds it for an 08 approval; until then it doesn't leave).
-func (e *NeedsApproval) Error() string {
-	names := make([]string, len(e.Categories))
-	for i, c := range e.Categories {
-		names[i] = c.String()
-	}
-	return gate.ErrNeedsApproval.Error() + ": " + strings.Join(names, ",")
-}
-
-func (e *NeedsApproval) Is(t error) bool { return t == gate.ErrNeedsApproval }
-
 // Mask finds what the policy covers in the request's content and swaps it out.
 func (m *Masker) Mask(ctx context.Context, c *gate.Call, body []byte) (out []byte, masked wire.Masked, err error) {
 	if c.Binary {
@@ -93,7 +76,7 @@ func (m *Masker) Mask(ctx context.Context, c *gate.Call, body []byte) (out []byt
 		walkStrings(doc, "", true, func(f field) { fields = append(fields, f) })
 	} else {
 		if !utf8.Valid(body) {
-			return nil, masked, &NeedsApproval{Categories: []Category{Images}}
+			return nil, masked, &gate.NeedsApproval{Images: true}
 		}
 		text := string(body)
 		fields = []field{{path: "", text: text, set: func(n string) { text = n; body = []byte(n) }}}
@@ -109,7 +92,6 @@ func (m *Masker) Mask(ctx context.Context, c *gate.Call, body []byte) (out []byt
 		return nil, masked, err
 	}
 	pol := m.Policy()
-	var ask []Category
 	values := map[string]Category{}
 	for i := range fields {
 		for _, s := range findings[i] {
@@ -126,11 +108,19 @@ func (m *Masker) Mask(ctx context.Context, c *gate.Call, body []byte) (out []byt
 	}
 	var subs []sub
 	var toMint []Item
+	var ask []gate.AskItem
 	for v, cat := range values {
-		switch pol.Action(cat) {
+		action := pol.Action(cat)
+		if action == Ask && c.Decisions != nil {
+			action = Mask
+			if d, ok := c.Decisions[v]; ok && Action(d) >= Mask && Action(d) <= Block && Action(d) != Ask {
+				action = Action(d)
+			}
+		}
+		switch action {
 		case Allow:
 		case Ask:
-			ask = append(ask, cat)
+			ask = append(ask, gate.AskItem{Category: int(cat), Name: cat.String(), Value: v})
 		case Block:
 			to := Blocked
 			if cat == Trackers {
@@ -143,7 +133,13 @@ func (m *Masker) Mask(ctx context.Context, c *gate.Call, body []byte) (out []byt
 		}
 	}
 	if len(ask) > 0 {
-		return nil, masked, &NeedsApproval{Categories: uniqueCats(ask)}
+		sort.Slice(ask, func(i, j int) bool {
+			if ask[i].Category != ask[j].Category {
+				return ask[i].Category < ask[j].Category
+			}
+			return ask[i].Value < ask[j].Value
+		})
+		return nil, masked, &gate.NeedsApproval{Items: ask}
 	}
 	if len(toMint) > 0 {
 		phs, err := m.Store.Assign(toMint)
@@ -204,19 +200,6 @@ func severity(c Category) int {
 	}
 }
 
-func uniqueCats(in []Category) []Category {
-	seen := map[Category]bool{}
-	var out []Category
-	for _, c := range in {
-		if !seen[c] {
-			seen[c] = true
-			out = append(out, c)
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
-	return out
-}
-
 // maskBinary: images and other binary bodies can't be masked. The IMAGES policy
 // decides (decision #18: blocked unless approved on the 08 sheet).
 func (m *Masker) maskBinary(c *gate.Call) (out []byte, masked wire.Masked, err error) {
@@ -227,7 +210,7 @@ func (m *Masker) maskBinary(c *gate.Call) (out []byte, masked wire.Masked, err e
 		if c.Approved {
 			return c.Raw, masked, nil
 		}
-		return nil, masked, &NeedsApproval{Categories: []Category{Images}}
+		return nil, masked, &gate.NeedsApproval{Images: true}
 	default:
 		masked.Blocked = 1
 		return nil, masked, nil

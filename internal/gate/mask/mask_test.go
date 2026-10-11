@@ -151,9 +151,22 @@ func TestPolicyActions(t *testing.T) {
 
 	m.SetPolicy(DefaultPolicy().Merge(map[Category]Action{Email: Ask}))
 	_, _, err = m.Mask(context.Background(), call(in), []byte(in))
-	var na *NeedsApproval
-	if !errors.As(err, &na) || !errors.Is(err, gate.ErrNeedsApproval) || len(na.Categories) != 1 || na.Categories[0] != Email {
-		t.Errorf("ask: %v", err)
+	var na *gate.NeedsApproval
+	if !errors.As(err, &na) || !errors.Is(err, gate.ErrNeedsApproval) || len(na.Items) != 1 || na.Items[0].Name != "EMAIL" || na.Items[0].Value != testEmail {
+		t.Fatalf("ask: %v", err)
+	}
+
+	// The user's answer: this email may leave as it is.
+	c := call(in)
+	c.Decisions = map[string]int{testEmail: int(Allow)}
+	out, _, err = m.Mask(context.Background(), c, []byte(in))
+	if err != nil || !strings.Contains(string(out), testEmail) {
+		t.Errorf("answered allow: %s %v", out, err)
+	}
+	c.Decisions = map[string]int{}
+	out, _, err = m.Mask(context.Background(), c, []byte(in))
+	if err != nil || strings.Contains(string(out), testEmail) {
+		t.Errorf("answered with no choice for the value must mask it: %s %v", out, err)
 	}
 }
 

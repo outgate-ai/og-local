@@ -81,6 +81,7 @@ func runServe(args []string) int {
 		opts.Masker = m
 	}
 	var link *corelink.Link
+	var srv *gate.Server
 	if *linkPath != "" {
 		if _, err := os.Stat(*linkPath); err == nil {
 			link = &corelink.Link{Path: *linkPath, Log: log, H: corelink.Handlers{
@@ -90,9 +91,14 @@ func runServe(args []string) int {
 						log.Info("masking policy from OG Core", "rules", len(rules))
 					}
 				},
+				Resolved: func(a corelink.Approval) {
+					if srv != nil {
+						srv.ApprovalResolved(&a)
+					}
+				},
 			}}
 			opts.Sinks = append(opts.Sinks, link)
-			link.Start(ctx)
+			opts.Approver = link
 		} else {
 			log.Warn("no OG Core link", "path", *linkPath, "err", err)
 		}
@@ -104,10 +110,13 @@ func runServe(args []string) int {
 		}
 		return h
 	}
-	srv, err := gate.New(&cfg, opts)
+	srv, err = gate.New(&cfg, &opts)
 	if err != nil {
 		log.Error("start", "err", err)
 		return 1
+	}
+	if link != nil {
+		link.Start(ctx)
 	}
 	ln, err := openListener(*listen, *socket)
 	if err != nil {

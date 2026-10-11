@@ -89,6 +89,9 @@ type Response struct {
 	Detail  string `json:"detail,omitempty"`
 	// Ledger is the gate's row id for this request.
 	Ledger string `json:"ledger,omitempty"`
+	// ApprovalID is the 08 approval a held request waits for (refused needs_approval:
+	// send the same request again, or with egress.approval_id, after it is answered).
+	ApprovalID string `json:"approval_id,omitempty"`
 }
 
 var ErrTooLong = errors.New("wire: request line too long")

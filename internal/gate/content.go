@@ -3,6 +3,7 @@ package gate
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/outgate-ai/og-local/internal/gate/wire"
 )
@@ -61,7 +62,42 @@ type Call struct {
 	Approved bool
 	// RespContentType is the upstream response's type, set before Restore.
 	RespContentType string
+	// Decisions are the user's answers to an "ask" (value → action wire value), set
+	// when the request is masked again after its 08 approval.
+	Decisions map[string]int
 }
+
+// AskItem is one value the policy says to ask about.
+type AskItem struct {
+	// Category is OG Core's MaskingCategory wire value; Name its name ("EMAIL").
+	Category int
+	Name     string
+	Value    string
+}
+
+// NeedsApproval is what a Masker returns when the policy says "ask": the request
+// is held for an 08 approval (Images: a binary body is part of it).
+type NeedsApproval struct {
+	Items  []AskItem
+	Images bool
+}
+
+func (e *NeedsApproval) Error() string {
+	var names []string
+	seen := map[string]bool{}
+	for _, it := range e.Items {
+		if !seen[it.Name] {
+			seen[it.Name] = true
+			names = append(names, it.Name)
+		}
+	}
+	if e.Images {
+		names = append(names, "IMAGES")
+	}
+	return ErrNeedsApproval.Error() + ": " + strings.Join(names, ",")
+}
+
+func (e *NeedsApproval) Is(t error) bool { return t == ErrNeedsApproval }
 
 // Refusal reasons a Masker may return (errors.Is), mapped onto refused codes.
 var (

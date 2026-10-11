@@ -63,7 +63,7 @@ func TestGateMasksOutgoingAndRestoresIncoming(t *testing.T) {
 		AllowHTTP:    []string{"127.0.0.1"},
 		DataDir:      dir, Mode: gate.Mask, Version: "test",
 	}
-	srv, err := gate.New(cfg, gate.Options{Masker: m, Sinks: []ledger.Sink{rec}})
+	srv, err := gate.New(cfg, &gate.Options{Masker: m, Sinks: []ledger.Sink{rec}})
 	if err != nil {
 		t.Fatal(err)
 	}

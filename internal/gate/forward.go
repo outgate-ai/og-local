@@ -125,6 +125,31 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 	if call.Content && !row.OnDevice {
 		var m wire.Masked
 		sent, m, err = s.masker.Mask(ctx, call, body)
+		var na *NeedsApproval
+		if errors.As(err, &na) {
+			budget := holdDefault
+			if req.TimeoutMs > 0 {
+				budget = min(time.Duration(req.TimeoutMs)*time.Millisecond, holdMax)
+			}
+			d, approvalID, aerr := s.asks.hold(ctx, call, dest.Display, na, budget)
+			row.ApprovalID = approvalID
+			if aerr != nil {
+				status, reason := 403, ErrNeedsApproval.Error()
+				switch {
+				case errors.Is(aerr, ErrApprovalDenied):
+					reason = ErrApprovalDenied.Error()
+				case errors.Is(aerr, ErrApprovalCancelled):
+					reason = ErrApprovalCancelled.Error()
+				case errors.Is(aerr, ErrCoreUnavailable):
+					status, reason = 503, ErrCoreUnavailable.Error()
+				}
+				r := refuse(status, reason, na.Error())
+				r.ApprovalID = approvalID
+				return r
+			}
+			call.Decisions, call.Approved = d.values, d.images
+			sent, m, err = s.masker.Mask(ctx, call, body)
+		}
 		if err != nil {
 			status, reason := 503, "mask_failed"
 			switch {

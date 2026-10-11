@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/outgate-ai/og-local/internal/gate/corelink"
 	"github.com/outgate-ai/og-local/internal/gate/ledger"
 	"github.com/outgate-ai/og-local/internal/gate/peer"
 	"github.com/outgate-ai/og-local/internal/gate/route"
@@ -36,6 +37,7 @@ type Server struct {
 	mu       sync.Mutex
 	health   map[string]any
 	healthFn func() map[string]any
+	asks     *asks
 }
 
 // Options are the parts tests and the command line replace.
@@ -48,9 +50,11 @@ type Options struct {
 	Transport http.RoundTripper
 	// Health adds live entries to the health op (detector, map, core link).
 	Health func() map[string]any
+	// Approver raises and follows 08 approvals for "ask" (OG Core, through corelink).
+	Approver Approver
 }
 
-func New(cfg *Config, opts Options) (*Server, error) {
+func New(cfg *Config, opts *Options) (*Server, error) {
 	log := opts.Logger
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
@@ -88,6 +92,7 @@ func New(cfg *Config, opts Options) (*Server, error) {
 		model:    &http.Client{Transport: unixTransport(cfg.ModelSocket), CheckRedirect: noRedirects},
 		health:   map[string]any{},
 		healthFn: opts.Health,
+		asks:     newAsks(opts.Approver),
 	}
 	return s, nil
 }
@@ -180,6 +185,11 @@ func (s *Server) classify(c peer.Cred) string {
 		return r.Class
 	}
 	return ""
+}
+
+// ApprovalResolved passes OG Core's resolution of an approval the gate raised.
+func (s *Server) ApprovalResolved(a *corelink.Approval) {
+	s.asks.Resolved(a)
 }
 
 // SetHealth publishes a component's state in the health op (detector, core link).

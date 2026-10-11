@@ -135,7 +135,7 @@ func start(t *testing.T, mode Mode, mutate func(*Config)) *harness {
 		mutate(&cfg)
 	}
 	rows := &rec{}
-	srv, err := New(&cfg, Options{Sinks: []ledger.Sink{rows}, Transport: regionDialer(up.srv.URL)})
+	srv, err := New(&cfg, &Options{Sinks: []ledger.Sink{rows}, Transport: regionDialer(up.srv.URL)})
 	if err != nil {
 		t.Fatal(err)
 	}
