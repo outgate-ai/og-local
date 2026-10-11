@@ -155,7 +155,11 @@ func (s *Server) handle(ctx context.Context, c *net.UnixConn) {
 	var resp *wire.Response
 	switch {
 	case class == "":
-		s.log.Warn("caller refused", "uid", cred.UID, "domain", cred.Domain())
+		if err := s.packages.Err(); err != nil {
+			s.log.Warn("caller refused", "uid", cred.UID, "domain", cred.Domain(), "packages_list", err)
+		} else {
+			s.log.Warn("caller refused", "uid", cred.UID, "domain", cred.Domain())
+		}
 		resp = wire.Refuse(req.ID, 403, "caller_not_allowed", "")
 	case req.Op == "":
 		resp = s.forward(ctx, class, cred, req, fds)

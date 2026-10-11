@@ -44,3 +44,10 @@ func TestPackages(t *testing.T) {
 		t.Errorf("stale uid after reinstall: %v", got)
 	}
 }
+
+func TestPackagesUnreadable(t *testing.T) {
+	p := &Packages{Path: t.TempDir() + "/missing"}
+	if p.Names(10187) != nil || p.Err() == nil {
+		t.Errorf("missing list: names %v err %v", p.Names(10187), p.Err())
+	}
+}

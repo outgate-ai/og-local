@@ -20,6 +20,14 @@ type Packages struct {
 	modTime time.Time
 	size    int64
 	byUID   map[uint32][]string
+	err     error
+}
+
+// Err is why the list couldn't be read the last time, or nil.
+func (p *Packages) Err() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.err
 }
 
 // DefaultPackagesList is where Android keeps it.
@@ -37,7 +45,7 @@ func (p *Packages) Names(uid uint32) []string {
 func (p *Packages) refresh() {
 	fi, err := os.Stat(p.Path)
 	if err != nil {
-		p.byUID = nil
+		p.byUID, p.err = nil, err
 		return
 	}
 	if p.byUID != nil && fi.ModTime().Equal(p.modTime) && fi.Size() == p.size {
@@ -45,6 +53,7 @@ func (p *Packages) refresh() {
 	}
 	f, err := os.Open(p.Path)
 	if err != nil {
+		p.byUID, p.err = nil, err
 		return
 	}
 	defer func() { _ = f.Close() }()
@@ -63,5 +72,5 @@ func (p *Packages) refresh() {
 		appID := uint32(uid % 100000)
 		byUID[appID] = append(byUID[appID], fields[0])
 	}
-	p.byUID, p.modTime, p.size = byUID, fi.ModTime(), fi.Size()
+	p.byUID, p.modTime, p.size, p.err = byUID, fi.ModTime(), fi.Size(), nil
 }
