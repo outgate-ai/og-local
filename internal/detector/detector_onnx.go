@@ -30,7 +30,11 @@ func newDetector(cfg Config) (pii.Detector, func() error, error) { //nolint:gocr
 		return nil, nil, err
 	}
 
-	det, err := onnx.New(dir, lib, onnx.WithThreads(cfg.Threads), onnx.WithModelFile(cfg.ModelFile),
+	graph := model.GraphPath()
+	if cfg.ModelFile != "" {
+		graph = cfg.ModelFile
+	}
+	det, err := onnx.New(dir, lib, onnx.WithThreads(cfg.Threads), onnx.WithModelFile(graph),
 		onnx.WithOptimizedModelPath(cfg.OptimizedPath), onnx.WithProfiling(cfg.ProfilePrefix))
 	if err != nil {
 		return nil, nil, err

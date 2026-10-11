@@ -91,7 +91,7 @@ func New(modelDir, libPath string, opts ...Option) (*Detector, error) {
 
 	modelPath := filepath.Join(modelDir, "onnx", "model_q4f16.onnx")
 	if cfg.modelFile != "" {
-		modelPath = filepath.Join(modelDir, cfg.modelFile)
+		modelPath = filepath.Join(modelDir, filepath.FromSlash(cfg.modelFile))
 	}
 	inInfo, outInfo, err := ort.GetInputOutputInfo(modelPath)
 	if err != nil {

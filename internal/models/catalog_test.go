@@ -18,6 +18,27 @@ func TestLookup(t *testing.T) {
 	}
 }
 
+func TestGraphPath(t *testing.T) {
+	def := Default()
+	if got := def.GraphPath(); got != DefaultGraph {
+		t.Errorf("default graph = %q, want %q", got, DefaultGraph)
+	}
+	q4, ok := Lookup("openai/privacy-filter-q4")
+	if !ok {
+		t.Fatal("q4 variant missing")
+	}
+	if q4.Repo != Default().Repo || q4.Revision != Default().Revision {
+		t.Error("q4 variant must share the default's snapshot")
+	}
+	found := false
+	for _, f := range q4.Files {
+		found = found || f.Path == q4.GraphPath()
+	}
+	if !found {
+		t.Errorf("q4 graph %q not among its files", q4.GraphPath())
+	}
+}
+
 func TestDefaultIsInAll(t *testing.T) {
 	def := Default()
 	for _, m := range All() {

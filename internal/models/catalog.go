@@ -7,6 +7,23 @@ type Model struct {
 	Files    []File
 }
 
+// DefaultGraph is the privacy-filter graph og-local has always loaded.
+const DefaultGraph = "onnx/model_q4f16.onnx"
+
+// graphs names the ONNX graph of catalog entries that don't load DefaultGraph,
+// relative to the model directory.
+var graphs = map[string]string{
+	"openai/privacy-filter-q4": "onnx/model_q4.onnx",
+}
+
+// GraphPath returns the graph the detector loads for m.
+func (m *Model) GraphPath() string {
+	if g, ok := graphs[m.Name]; ok {
+		return g
+	}
+	return DefaultGraph
+}
+
 type File struct {
 	Path   string
 	Size   int64
@@ -29,6 +46,22 @@ var catalog = []Model{
 		Files: []File{
 			{Path: "onnx/model_q4f16.onnx", Size: 165744},
 			{Path: "onnx/model_q4f16.onnx_data", Size: 809061992},
+			{Path: "tokenizer.json", Size: 27868174},
+			{Path: "tokenizer_config.json", Size: 234},
+			{Path: "config.json", Size: 3039},
+			{Path: "viterbi_calibration.json", Size: 372},
+		},
+	},
+	// The same model as a 4-bit graph with fp32 activations: on CPUs without fast
+	// fp16 (phones, the OG OS emulator) it is as fast as q4f16 and needs ~25% less
+	// memory. It shares the snapshot directory with the entry above.
+	{
+		Name:     "openai/privacy-filter-q4",
+		Repo:     "openai/privacy-filter",
+		Revision: "7ffa9a043d54d1be65afb281eddf0ffbe629385b",
+		Files: []File{
+			{Path: "onnx/model_q4.onnx", Size: 160219},
+			{Path: "onnx/model_q4.onnx_data", Size: 917120144},
 			{Path: "tokenizer.json", Size: 27868174},
 			{Path: "tokenizer_config.json", Size: 234},
 			{Path: "config.json", Size: 3039},
