@@ -113,7 +113,14 @@ func (a *asks) hold(ctx context.Context, c *Call, dest string, na *NeedsApproval
 	x, ok := a.byFP[fp]
 	a.mu.Unlock()
 	if !ok {
-		id, err := a.ap.Raise(ctx, gateApproval(c, dest, na))
+		r := gateApproval(c, dest, na)
+		id, err := a.ap.Raise(ctx, r)
+		if err != nil && r.LaneID != "" {
+			// OG Core refuses lanes it doesn't know (a caller's own lane id): the sheet still
+			// shows, just not attached to a lane.
+			r.LaneID = ""
+			id, err = a.ap.Raise(ctx, r)
+		}
 		if err != nil {
 			return nil, "", fmt.Errorf("%w: %v", ErrCoreUnavailable, err)
 		}
@@ -129,7 +136,7 @@ func (a *asks) hold(ctx context.Context, c *Call, dest string, na *NeedsApproval
 	case <-ctx.Done():
 		return nil, x.id, ErrNeedsApproval
 	}
-	d, err := decide(x.approval, na)
+	d, err := decide(x.approval, na, true)
 	return d, x.id, err
 }
 
@@ -146,7 +153,7 @@ func (a *asks) existing(ctx context.Context, id string, na *NeedsApproval, budge
 			return nil, id, ErrApprovalCancelled
 		}
 		if ap.State != corelink.StatePending {
-			d, err := decide(ap, na)
+			d, err := decide(ap, na, false)
 			return d, id, err
 		}
 		if a.now().After(deadline) {
@@ -161,8 +168,12 @@ func (a *asks) existing(ctx context.Context, id string, na *NeedsApproval, budge
 }
 
 // decide turns an answer into per-value actions. Approve: each disclosure's
-// treatment (real → allow, masked → mask, blocked → block); any other role refuses.
-func decide(ap *corelink.Approval, na *NeedsApproval) (*decision, error) {
+// treatment (real → allow, masked → mask, blocked → block, missing → its default);
+// any other role refuses. own is set for approvals the gate raised: their image
+// disclosure defaults to blocked, so an image leaves only when chosen REAL. An
+// approval someone else raised and named (og-agentd's screenshot grant) is a plain
+// yes or no for its image.
+func decide(ap *corelink.Approval, na *NeedsApproval, own bool) (*decision, error) {
 	if ap.State == corelink.StateCancelled || ap.Answer == nil {
 		return nil, ErrApprovalCancelled
 	}
@@ -185,9 +196,7 @@ func decide(ap *corelink.Approval, na *NeedsApproval) (*decision, error) {
 		}
 	}
 	if na.Images {
-		t, chosen := choice["image"]
-		// A plain approve without choices (og-agentd's screenshot grant) sends the image.
-		d.images = t == corelink.TreatReal || (!chosen && len(ap.Answer.Choices) == 0)
+		d.images = choice["image"] == corelink.TreatReal || !own
 	}
 	return d, nil
 }

@@ -210,6 +210,11 @@ func (m *Masker) maskBinary(c *gate.Call) (out []byte, masked wire.Masked, err e
 		if c.Approved {
 			return c.Raw, masked, nil
 		}
+		if c.Decisions != nil {
+			// Answered, and the image wasn't chosen to leave.
+			masked.Blocked = 1
+			return nil, masked, nil
+		}
 		return nil, masked, &gate.NeedsApproval{Images: true}
 	default:
 		masked.Blocked = 1

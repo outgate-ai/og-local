@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -28,13 +29,19 @@ type fakeCore struct {
 	srv     *gate.Server
 	byID    map[string]*corelink.Approval
 	noReply bool
+	// rejectLanes: refuse approvals scoped to a lane, like OG Core for lanes it doesn't know.
+	rejectLanes bool
 }
 
 func (f *fakeCore) Up() bool { return true }
 
 func (f *fakeCore) Raise(_ context.Context, r *corelink.Request) (string, error) {
+	if f.rejectLanes && r.LaneID != "" {
+		return "", errors.New("unknown lane")
+	}
 	f.mu.Lock()
-	f.raised = append(f.raised, r)
+	cp := *r
+	f.raised = append(f.raised, &cp)
 	id := fmt.Sprintf("ap_%d", len(f.raised))
 	ans, noReply := f.answer, f.noReply
 	f.mu.Unlock()
@@ -217,5 +224,46 @@ func TestUploadNeedsConfirmedApproval(t *testing.T) {
 	h.mu.Unlock()
 	if n != 1 {
 		t.Errorf("uploads that left: %d, want 1", n)
+	}
+}
+
+func TestGateImageApproval(t *testing.T) {
+	h := startAsk(t, DefaultPolicy())
+	dir := filepath.Dir(h.sock)
+	png := filepath.Join(dir, "own.png")
+	_ = os.WriteFile(png, []byte("\x89PNG\r\n\x1a\n synthetic"), 0o600)
+	req := func(body string) map[string]any {
+		return map[string]any{
+			"source": map[string]any{"region_id": "global", "adapter": "devq"}, "method": "POST",
+			"path": "/api/v1/agents/devices/d1/uploads", "file": png, "body": map[string]any{"note": body},
+			"egress": map[string]any{"kind": "upload", "lane_id": "ln_unknown"}, "timeout_ms": 1500,
+		}
+	}
+	// A plain approve keeps the image's default: blocked.
+	h.core.answer = &corelink.Answer{Role: corelink.RoleApprove}
+	if resp := h.call(t, req("a")); resp["refused"] != "blocked_by_policy" {
+		t.Errorf("approve without choosing the image: %v", resp)
+	}
+	h.core.answer = &corelink.Answer{Role: corelink.RoleApprove, Choices: []corelink.Choice{{Item: "image", Treatment: corelink.TreatReal}}}
+	if resp := h.call(t, req("b")); resp["status"].(float64) != 200 {
+		t.Errorf("image chosen REAL: %v", resp)
+	}
+	h.mu.Lock()
+	n := len(*h.seen)
+	h.mu.Unlock()
+	if n != 1 {
+		t.Errorf("images that left: %d, want 1", n)
+	}
+}
+
+func TestRaiseRetriesWithoutUnknownLane(t *testing.T) {
+	h := startAsk(t, DefaultPolicy().Merge(map[Category]Action{Email: Ask}))
+	h.core.rejectLanes = true
+	h.core.answer = &corelink.Answer{Role: corelink.RoleApprove}
+	if resp := h.call(t, eventReq("mail "+testEmail, 3000)); resp["status"].(float64) != 200 {
+		t.Fatalf("resp = %v", resp)
+	}
+	if r := h.core.raised[len(h.core.raised)-1]; r.LaneID != "" {
+		t.Errorf("retry kept the unknown lane %q", r.LaneID)
 	}
 }

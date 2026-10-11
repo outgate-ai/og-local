@@ -151,6 +151,7 @@ func (d *Detector) Usable() error {
 			d.stats.Error = err.Error()
 			return ErrDetectorUnavailable
 		}
+		d.stats.Error = ""
 	}
 	return nil
 }
