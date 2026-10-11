@@ -475,11 +475,12 @@ func TestClassConfig(t *testing.T) {
 
 // fakeApprover answers approvals like OG Core after the user tapped the 08 sheet.
 type fakeApprover struct {
-	mu     sync.Mutex
-	srv    *Server
-	answer *corelink.Answer
-	byID   map[string]*corelink.Approval
-	raised int
+	mu      sync.Mutex
+	srv     *Server
+	answer  *corelink.Answer
+	byID    map[string]*corelink.Approval
+	raised  int
+	noReply bool
 }
 
 func (f *fakeApprover) Up() bool { return true }
@@ -488,8 +489,11 @@ func (f *fakeApprover) Raise(_ context.Context, _ *corelink.Request) (string, er
 	f.mu.Lock()
 	f.raised++
 	id := fmt.Sprintf("ap_g%d", f.raised)
-	ans := f.answer
+	ans, noReply := f.answer, f.noReply
 	f.mu.Unlock()
+	if noReply {
+		return id, nil
+	}
 	go func() {
 		time.Sleep(10 * time.Millisecond)
 		f.srv.ApprovalResolved(&corelink.Approval{ID: id, State: corelink.StateAnswered, Answer: ans})
@@ -524,9 +528,11 @@ func TestImageConsentForAgentUploadsOnly(t *testing.T) {
 	h := startWith(t, Mask, nil, nil, ap)
 	png := filepath.Join(h.dir, "shot.png")
 	_ = os.WriteFile(png, []byte("\x89PNG\r\n\x1a\n synthetic"), 0o600)
+	step := 0
 	upload := func(approval string) string {
+		step++ // another step's capture: not the request answered before
 		return fmt.Sprintf(`{"source":{"region_id":"global","adapter":"devq"},"method":"POST","path":"/api/v1/agents/devices/d1/uploads",`+
-			`"body":{"lane_id":"ln_1"},"file":"fd:0","egress":{"kind":"upload","approval_id":%q},"timeout_ms":1500}`, approval)
+			`"body":{"lane_id":"ln_1","step_index":%d},"file":"fd:0","egress":{"kind":"upload","approval_id":%q},"timeout_ms":1500}`, step, approval)
 	}
 	send := func(line string) map[string]any {
 		f, err := os.Open(png)
@@ -656,6 +662,41 @@ func TestAppqTenancyTokenInjected(t *testing.T) {
 	resp = chat.call(`{"source":{"region_id":"appq:travel","adapter":"chat"},"method":"POST","path":"/commands/pop","body":{},"egress":{"kind":"poll"}}`)
 	if resp["refused"] != "destination_not_allowed" || len(chat.up.got) != 0 {
 		t.Errorf("chat used the agent's tenancy: %v", resp)
+	}
+}
+
+// An image held for its 08 approval past the caller's budget: sent again once answered, the same
+// upload joins that approval (its encoding is the same bytes) instead of raising another.
+func TestImageApprovalRetryJoins(t *testing.T) {
+	ap := &fakeApprover{byID: map[string]*corelink.Approval{}, noReply: true}
+	h := startWith(t, Mask, nil, nil, ap)
+	up := filepath.Join(h.dir, "uploads")
+	_ = os.MkdirAll(up, 0o700)
+	png := filepath.Join(up, "shot.png")
+	_ = os.WriteFile(png, []byte("\x89PNG\r\n\x1a\n synthetic"), 0o600)
+	req := fmt.Sprintf(`{"source":{"region_id":"global","adapter":"devq"},"method":"POST","path":"/api/v1/agents/devices/d1/uploads",`+
+		`"body":{"lane_id":"ln_1","step_index":2,"note":"x"},"file":%q,"egress":{"kind":"upload"},"timeout_ms":200}`, png)
+	resp := h.call(req)
+	if resp["refused"] != "needs_approval" || resp["approval_id"] != "ap_g1" {
+		t.Fatalf("held: %v", resp)
+	}
+	h.srv.ApprovalResolved(&corelink.Approval{ID: "ap_g1", State: corelink.StateAnswered, Answer: &corelink.Answer{
+		Role: corelink.RoleApprove, Choices: []corelink.Choice{{Item: "image", Treatment: corelink.TreatReal}},
+	}})
+	resp = h.call(req)
+	if resp["status"].(float64) != 200 || ap.raisedN() != 1 {
+		t.Errorf("retry: %v, approvals raised %d", resp, ap.raisedN())
+	}
+	if row := h.rows.last(t); row.ApprovalID != "ap_g1" || row.Blocked {
+		t.Errorf("row = %+v", row)
+	}
+	first := h.up.last().Body
+	resp = h.call(req)
+	if h.up.last().Body != first {
+		t.Error("the same upload was encoded differently")
+	}
+	if !strings.Contains(first, "--og-gate-") {
+		t.Errorf("boundary: %.80s", first)
 	}
 }
 

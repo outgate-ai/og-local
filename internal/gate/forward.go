@@ -3,8 +3,10 @@ package gate
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -316,18 +319,33 @@ func (s *Server) multipartBody(req *wire.Request, fds []int) (body []byte, conte
 			return nil, "", fmt.Errorf("upload fields: %w", err)
 		}
 	}
-	var buf bytes.Buffer
-	w := multipart.NewWriter(&buf)
-	for k, v := range fields {
-		val := ""
-		switch x := v.(type) {
+	// The same upload is encoded to the same bytes (fields in order, a boundary derived from the
+	// content), so a retry after an 08 approval is recognised as the request that was held.
+	keys := make([]string, 0, len(fields))
+	for k := range fields {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	vals := make([]string, len(keys))
+	sum := sha256.New()
+	for i, k := range keys {
+		switch x := fields[k].(type) {
 		case string:
-			val = x
+			vals[i] = x
 		default:
 			b, _ := json.Marshal(x)
-			val = string(b)
+			vals[i] = string(b)
 		}
-		if err := w.WriteField(k, val); err != nil {
+		_, _ = fmt.Fprintf(sum, "%s\x00%s\x00", k, vals[i])
+	}
+	_, _ = sum.Write(data)
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	if err := w.SetBoundary("og-gate-" + hex.EncodeToString(sum.Sum(nil))[:40]); err != nil {
+		return nil, "", err
+	}
+	for i, k := range keys {
+		if err := w.WriteField(k, vals[i]); err != nil {
 			return nil, "", err
 		}
 	}
