@@ -53,7 +53,7 @@ func (m *Masker) Ready() (ready bool, reason string) {
 	if err := m.Store.Ready(); err != nil {
 		return false, err.Error()
 	}
-	if err := m.Detector.Probe(); err != nil {
+	if err := m.Detector.Usable(); err != nil {
 		return false, err.Error()
 	}
 	return true, ""

@@ -133,16 +133,15 @@ func (d *Detector) unload() {
 	d.stats.Unloads++
 }
 
-// Probe reports whether the model can be used, loading it if needed.
-func (d *Detector) Probe() error {
+// Usable reports, without loading anything, whether a request could use the model
+// now: it is loaded, or not loaded and not known to be missing.
+func (d *Detector) Usable() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	_, err := d.pipeline()
-	if err == nil {
-		d.lastUse = d.now()
-		d.armIdle()
+	if d.pipe == nil && !d.failedAt.IsZero() && d.now().Sub(d.failedAt) < retryAfterFailure {
+		return ErrDetectorUnavailable
 	}
-	return err
+	return nil
 }
 
 func (d *Detector) Stats() DetectorStats {

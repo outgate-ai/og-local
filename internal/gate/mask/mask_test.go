@@ -182,7 +182,7 @@ func TestFailClosed(t *testing.T) {
 		t.Errorf("no detector: %v", err)
 	}
 	if ok, why := m.Ready(); ok || why != ErrDetectorUnavailable.Error() {
-		t.Errorf("Ready = %v %q", ok, why)
+		t.Errorf("Ready after a failed load = %v %q", ok, why)
 	}
 	if st := det.Stats(); st.Loaded || st.Error == "" {
 		t.Errorf("stats = %+v", st)
@@ -191,6 +191,23 @@ func TestFailClosed(t *testing.T) {
 	locked := New(NewStore(filepath.Join(dir, "missing"), time.Hour, 10), det)
 	if _, _, err := locked.Mask(context.Background(), call(in), []byte(in)); !errors.Is(err, gate.ErrStorageLocked) {
 		t.Errorf("locked storage: %v", err)
+	}
+}
+
+func TestReadyDoesNotLoadTheModel(t *testing.T) {
+	loads := 0
+	det := NewDetector(func() (pii.Detector, func() error, error) {
+		loads++
+		return &fakeDetector{}, func() error { return nil }, nil
+	}, time.Minute)
+	defer det.Close()
+	m := New(NewStore(t.TempDir(), time.Hour, 10), det)
+	if ok, _ := m.Ready(); !ok || loads != 0 {
+		t.Errorf("Ready = %v, loads = %d", ok, loads)
+	}
+	in := `{"text":"hello there"}`
+	if _, _, err := m.Mask(context.Background(), call(in), []byte(in)); err != nil || loads != 1 {
+		t.Errorf("first content request: %v, loads = %d", err, loads)
 	}
 }
 
