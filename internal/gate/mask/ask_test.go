@@ -37,7 +37,10 @@ type fakeCore struct {
 func (f *fakeCore) Up() bool { return true }
 
 func (f *fakeCore) Raise(_ context.Context, r *corelink.Request) (string, error) {
-	if f.rejectLanes && r.LaneID != "" {
+	f.mu.Lock()
+	reject := f.rejectLanes
+	f.mu.Unlock()
+	if reject && r.LaneID != "" {
 		return "", errors.New("unknown lane")
 	}
 	f.mu.Lock()
@@ -62,6 +65,19 @@ func (f *fakeCore) Get(_ context.Context, id string) (*corelink.Approval, error)
 }
 
 func (f *fakeCore) Cancel(string, string) {}
+
+// set changes the fake under its lock: the gate reads it from its own goroutines.
+func (f *fakeCore) set(change func(f *fakeCore)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	change(f)
+}
+
+func (f *fakeCore) raisedList() []*corelink.Request {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]*corelink.Request(nil), f.raised...)
+}
 
 type askHarness struct {
 	sock string
@@ -167,14 +183,16 @@ func TestAskPolicyDoesNotHoldOutgateTraffic(t *testing.T) {
 	if !strings.Contains(sent, testEmail) || len(Placeholders(sent)) != 0 {
 		t.Errorf("Outgate traffic was masked: %s", sent)
 	}
-	if len(h.core.raised) != 0 {
-		t.Errorf("an approval was raised for Outgate traffic: %d", len(h.core.raised))
+	if n := len(h.core.raisedList()); n != 0 {
+		t.Errorf("an approval was raised for Outgate traffic: %d", n)
 	}
 }
 
 func TestAskHoldsRaisesAndProceeds(t *testing.T) {
 	h := startAsk(t, DefaultPolicy().Merge(map[Category]Action{Email: Ask}))
-	h.core.answer = &corelink.Answer{Role: corelink.RoleApprove, Choices: []corelink.Choice{{Item: "d0", Treatment: corelink.TreatReal}}}
+	h.core.set(func(f *fakeCore) {
+		f.answer = &corelink.Answer{Role: corelink.RoleApprove, Choices: []corelink.Choice{{Item: "d0", Treatment: corelink.TreatReal}}}
+	})
 	resp := h.call(t, eventReq("mail me at "+testEmail, 5000))
 	if resp["status"].(float64) != 200 {
 		t.Fatalf("resp = %v", resp)
@@ -185,7 +203,7 @@ func TestAskHoldsRaisesAndProceeds(t *testing.T) {
 	if !strings.Contains(sent, testEmail) {
 		t.Errorf("approved REAL value did not leave: %s", sent)
 	}
-	r := h.core.raised[0]
+	r := h.core.raisedList()[0]
 	if r.LaneID != "ln_fake" || r.AccountID != "acct-fake" || len(r.Disclosures) != 1 || r.Disclosures[0].Field != "email" ||
 		r.Disclosures[0].Preview != testEmail || r.Disclosures[0].Default != corelink.TreatMasked || r.Kicker == "" {
 		t.Errorf("approval = %+v", r)
@@ -194,7 +212,7 @@ func TestAskHoldsRaisesAndProceeds(t *testing.T) {
 
 func TestAskMaskedAnswerAndDenial(t *testing.T) {
 	h := startAsk(t, DefaultPolicy().Merge(map[Category]Action{Email: Ask}))
-	h.core.answer = &corelink.Answer{Role: corelink.RoleApprove}
+	h.core.set(func(f *fakeCore) { f.answer = &corelink.Answer{Role: corelink.RoleApprove} })
 	resp := h.call(t, eventReq("mail me at "+testEmail, 5000))
 	h.mu.Lock()
 	sent := (*h.seen)[0]
@@ -203,7 +221,7 @@ func TestAskMaskedAnswerAndDenial(t *testing.T) {
 		t.Errorf("approve with the default (masked): %v %s", resp, sent)
 	}
 
-	h.core.answer = &corelink.Answer{Role: corelink.RoleSkip}
+	h.core.set(func(f *fakeCore) { f.answer = &corelink.Answer{Role: corelink.RoleSkip} })
 	resp = h.call(t, eventReq("other mail "+testEmail+" again", 5000))
 	if resp["refused"] != "approval_denied" {
 		t.Errorf("don't send: %v", resp)
@@ -218,7 +236,7 @@ func TestAskMaskedAnswerAndDenial(t *testing.T) {
 
 func TestAskTimesOutThenRetryJoins(t *testing.T) {
 	h := startAsk(t, DefaultPolicy().Merge(map[Category]Action{Email: Ask}))
-	h.core.noReply = true
+	h.core.set(func(f *fakeCore) { f.noReply = true })
 	resp := h.call(t, eventReq("mail "+testEmail, 200))
 	if resp["refused"] != "needs_approval" || resp["approval_id"] != "ap_1" {
 		t.Fatalf("held past the budget: %v", resp)
@@ -228,8 +246,8 @@ func TestAskTimesOutThenRetryJoins(t *testing.T) {
 		Answer: &corelink.Answer{Role: corelink.RoleApprove, Choices: []corelink.Choice{{Item: "d0", Treatment: corelink.TreatReal}}},
 	})
 	resp = h.call(t, eventReq("mail "+testEmail, 200))
-	if resp["status"].(float64) != 200 || len(h.core.raised) != 1 {
-		t.Errorf("retry: %v, raised %d", resp, len(h.core.raised))
+	if resp["status"].(float64) != 200 || len(h.core.raisedList()) != 1 {
+		t.Errorf("retry: %v, raised %d", resp, len(h.core.raisedList()))
 	}
 }
 
@@ -245,15 +263,21 @@ func TestUploadNeedsConfirmedApproval(t *testing.T) {
 			"egress": map[string]any{"kind": "upload", "lane_id": "ln_1", "approval_id": approval}, "timeout_ms": 1500,
 		}
 	}
-	h.core.byID["ap_pending"] = &corelink.Approval{ID: "ap_pending", State: corelink.StatePending}
+	h.core.set(func(f *fakeCore) {
+		f.byID["ap_pending"] = &corelink.Approval{ID: "ap_pending", State: corelink.StatePending}
+	})
 	if resp := h.call(t, up("ap_pending")); resp["refused"] != "needs_approval" {
 		t.Errorf("pending approval: %v", resp)
 	}
-	h.core.byID["ap_no"] = &corelink.Approval{ID: "ap_no", State: corelink.StateAnswered, Answer: &corelink.Answer{Role: corelink.RoleAlternative}}
+	h.core.set(func(f *fakeCore) {
+		f.byID["ap_no"] = &corelink.Approval{ID: "ap_no", State: corelink.StateAnswered, Answer: &corelink.Answer{Role: corelink.RoleAlternative}}
+	})
 	if resp := h.call(t, up("ap_no")); resp["refused"] != "approval_denied" {
 		t.Errorf("text only: %v", resp)
 	}
-	h.core.byID["ap_yes"] = &corelink.Approval{ID: "ap_yes", State: corelink.StateAnswered, Answer: &corelink.Answer{Role: corelink.RoleApprove}}
+	h.core.set(func(f *fakeCore) {
+		f.byID["ap_yes"] = &corelink.Approval{ID: "ap_yes", State: corelink.StateAnswered, Answer: &corelink.Answer{Role: corelink.RoleApprove}}
+	})
 	if resp := h.call(t, up("ap_yes")); resp["status"].(float64) != 200 {
 		t.Errorf("approved screenshot: %v", resp)
 	}
@@ -278,11 +302,13 @@ func TestGateImageApproval(t *testing.T) {
 		}
 	}
 	// A plain approve keeps the image's default: blocked.
-	h.core.answer = &corelink.Answer{Role: corelink.RoleApprove}
+	h.core.set(func(f *fakeCore) { f.answer = &corelink.Answer{Role: corelink.RoleApprove} })
 	if resp := h.call(t, req("a")); resp["refused"] != "blocked_by_policy" {
 		t.Errorf("approve without choosing the image: %v", resp)
 	}
-	h.core.answer = &corelink.Answer{Role: corelink.RoleApprove, Choices: []corelink.Choice{{Item: "image", Treatment: corelink.TreatReal}}}
+	h.core.set(func(f *fakeCore) {
+		f.answer = &corelink.Answer{Role: corelink.RoleApprove, Choices: []corelink.Choice{{Item: "image", Treatment: corelink.TreatReal}}}
+	})
 	if resp := h.call(t, req("b")); resp["status"].(float64) != 200 {
 		t.Errorf("image chosen REAL: %v", resp)
 	}
@@ -296,12 +322,13 @@ func TestGateImageApproval(t *testing.T) {
 
 func TestRaiseRetriesWithoutUnknownLane(t *testing.T) {
 	h := startAsk(t, DefaultPolicy().Merge(map[Category]Action{Email: Ask}))
-	h.core.rejectLanes = true
-	h.core.answer = &corelink.Answer{Role: corelink.RoleApprove}
+	h.core.set(func(f *fakeCore) { f.rejectLanes = true })
+	h.core.set(func(f *fakeCore) { f.answer = &corelink.Answer{Role: corelink.RoleApprove} })
 	if resp := h.call(t, eventReq("mail "+testEmail, 3000)); resp["status"].(float64) != 200 {
 		t.Fatalf("resp = %v", resp)
 	}
-	if r := h.core.raised[len(h.core.raised)-1]; r.LaneID != "" {
+	if list := h.core.raisedList(); list[len(list)-1].LaneID != "" {
+		r := list[len(list)-1]
 		t.Errorf("retry kept the unknown lane %q", r.LaneID)
 	}
 }

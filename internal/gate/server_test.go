@@ -411,13 +411,13 @@ func TestMaskingFollowsTheDestinationClass(t *testing.T) {
 		t.Errorf("provider by URL: %v %s", resp, h.up.last().Body)
 	}
 
-	h.srv.cfg.Mode = Passthrough
-	h.srv.masker = passthrough{}
-	resp = h.call(`{"source":{"region_id":"provider:llm","adapter":"local"},"method":"POST","path":"/v1/chat/completions","body":` + body + `,"egress":{}}`)
-	if resp["status"].(float64) != 200 || h.up.last().Body != body {
-		t.Fatalf("passthrough: %v %s", resp, h.up.last().Body)
+	// Passthrough (debuggable builds only): the masked class leaves unmasked, and says so.
+	pt := startWith(t, Passthrough, func(c *Config) { withProvider(portOf(c.Environments[0].Global))(c) }, nil, nil)
+	resp = pt.call(`{"source":{"region_id":"provider:llm","adapter":"local"},"method":"POST","path":"/v1/chat/completions","body":` + body + `,"egress":{}}`)
+	if resp["status"].(float64) != 200 || pt.up.last().Body != body {
+		t.Fatalf("passthrough: %v %s", resp, pt.up.last().Body)
 	}
-	if row := h.rows.last(t); row.Mask != MaskOff || row.Class != "provider" {
+	if row := pt.rows.last(t); row.Mask != MaskOff || row.Class != "provider" {
 		t.Errorf("passthrough row = %+v", row)
 	}
 }
@@ -505,6 +505,18 @@ func (f *fakeApprover) Get(_ context.Context, id string) (*corelink.Approval, er
 
 func (f *fakeApprover) Cancel(string, string) {}
 
+func (f *fakeApprover) set(change func(f *fakeApprover)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	change(f)
+}
+
+func (f *fakeApprover) raisedN() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.raised
+}
+
 // Decision #18 stays: images an agent uploads to Outgate need an 08 approval even
 // though nothing is masked; images the user attaches in Chat pass.
 func TestImageConsentForAgentUploadsOnly(t *testing.T) {
@@ -526,7 +538,7 @@ func TestImageConsentForAgentUploadsOnly(t *testing.T) {
 	}
 	n := len(h.up.got)
 	// The agent, approve without choosing the image: its default is blocked.
-	ap.answer = &corelink.Answer{Role: corelink.RoleApprove}
+	ap.set(func(f *fakeApprover) { f.answer = &corelink.Answer{Role: corelink.RoleApprove} })
 	if resp := send(upload("")); resp["refused"] != "blocked_by_policy" || resp["approval_id"] != "ap_g1" {
 		t.Errorf("image left without being chosen: %v", resp)
 	}
@@ -534,12 +546,16 @@ func TestImageConsentForAgentUploadsOnly(t *testing.T) {
 		t.Errorf("row = %+v", row)
 	}
 	// Chosen REAL on the sheet: it leaves.
-	ap.answer = &corelink.Answer{Role: corelink.RoleApprove, Choices: []corelink.Choice{{Item: "image", Treatment: corelink.TreatReal}}}
+	ap.set(func(f *fakeApprover) {
+		f.answer = &corelink.Answer{Role: corelink.RoleApprove, Choices: []corelink.Choice{{Item: "image", Treatment: corelink.TreatReal}}}
+	})
 	if resp := send(upload("")); resp["status"].(float64) != 200 {
 		t.Errorf("approved image: %v", resp)
 	}
 	// og-agentd's own screenshot approval, answered yes.
-	ap.byID["ap_shot"] = &corelink.Approval{ID: "ap_shot", State: corelink.StateAnswered, Answer: &corelink.Answer{Role: corelink.RoleApprove}}
+	ap.set(func(f *fakeApprover) {
+		f.byID["ap_shot"] = &corelink.Approval{ID: "ap_shot", State: corelink.StateAnswered, Answer: &corelink.Answer{Role: corelink.RoleApprove}}
+	})
 	if resp := send(upload("ap_shot")); resp["status"].(float64) != 200 {
 		t.Errorf("agent's approved screenshot: %v", resp)
 	}
@@ -549,12 +565,17 @@ func TestImageConsentForAgentUploadsOnly(t *testing.T) {
 
 	// Chat: the user attached it, no approval is raised.
 	uid := uint32(os.Getuid()) //nolint:gosec // uids fit uint32
-	h.srv.cfg.Callers = []CallerRule{{UID: &uid, Class: "chat"}}
-	raised := ap.raised
-	if resp := send(upload("")); resp["status"].(float64) != 200 {
+	chatAp := &fakeApprover{byID: map[string]*corelink.Approval{}}
+	chat := startWith(t, Mask, func(c *Config) { c.Callers = []CallerRule{{UID: &uid, Class: "chat"}} }, nil, chatAp)
+	cf, err := os.Open(png)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cf.Close() }()
+	if resp := chat.callFD(upload(""), int(cf.Fd())); resp["status"].(float64) != 200 || len(chat.up.got) != 1 {
 		t.Errorf("chat attachment: %v", resp)
 	}
-	if ap.raised != raised {
+	if chatAp.raisedN() != 0 {
 		t.Error("an approval was raised for a chat attachment")
 	}
 
@@ -625,10 +646,15 @@ func TestAppqTenancyTokenInjected(t *testing.T) {
 	}
 
 	uid := uint32(os.Getuid()) //nolint:gosec // uids fit uint32
-	h.srv.cfg.Callers = []CallerRule{{UID: &uid, Class: "chat"}}
-	n := len(h.up.got)
-	resp = h.call(`{"source":{"region_id":"appq:travel","adapter":"chat"},"method":"POST","path":"/commands/pop","body":{},"egress":{"kind":"poll"}}`)
-	if resp["refused"] != "destination_not_allowed" || len(h.up.got) != n {
+	chat := start(t, Passthrough, func(c *Config) { c.Callers = []CallerRule{{UID: &uid, Class: "chat"}} })
+	if err := os.MkdirAll(filepath.Join(chat.dir, "appq"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(chat.dir, "appq", "travel.ogpkg"), []byte(pkg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resp = chat.call(`{"source":{"region_id":"appq:travel","adapter":"chat"},"method":"POST","path":"/commands/pop","body":{},"egress":{"kind":"poll"}}`)
+	if resp["refused"] != "destination_not_allowed" || len(chat.up.got) != 0 {
 		t.Errorf("chat used the agent's tenancy: %v", resp)
 	}
 }
@@ -771,11 +797,11 @@ func TestWireRejectsBadInput(t *testing.T) {
 
 func TestCallerByPackage(t *testing.T) {
 	uid := os.Getuid()
+	list := filepath.Join(t.TempDir(), "packages.list")
 	h := start(t, Passthrough, func(c *Config) {
 		c.Callers = []CallerRule{{Package: "ai.outgate.chat", Class: "chat"}}
+		c.PackagesList = list
 	})
-	list := filepath.Join(h.dir, "packages.list")
-	h.srv.packages.Path = list
 	write := func(pkg string) {
 		line := fmt.Sprintf("%s %d 0 /data/user/0/%s platform 3003\n", pkg, uid, pkg)
 		if err := os.WriteFile(list, []byte(line), 0o600); err != nil {
@@ -798,14 +824,14 @@ func TestUnreadablePackagesListIsReported(t *testing.T) {
 		t.Skip("root reads any file; peer.TestPackagesListUnreadableByTheGate covers it as another uid")
 	}
 	uid := uint32(os.Getuid()) //nolint:gosec // uids fit uint32
-	h := start(t, Passthrough, func(c *Config) {
-		c.Callers = []CallerRule{{Package: "ai.outgate.chat", Class: "chat"}, {UID: &uid, Class: "debug"}}
-	})
-	list := filepath.Join(h.dir, "packages.list")
+	list := filepath.Join(t.TempDir(), "packages.list")
 	if err := os.WriteFile(list, []byte(fmt.Sprintf("ai.outgate.chat %d 0 /x platform 3003\n", uid)), 0o040); err != nil { //nolint:gosec // unreadable on purpose
 		t.Fatal(err)
 	}
-	h.srv.packages.Path = list
+	h := start(t, Passthrough, func(c *Config) {
+		c.Callers = []CallerRule{{Package: "ai.outgate.chat", Class: "chat"}, {UID: &uid, Class: "debug"}}
+		c.PackagesList = list
+	})
 	if err := h.srv.CheckCallers(); err == nil {
 		t.Error("CheckCallers accepted an unreadable list")
 	}
