@@ -486,3 +486,27 @@ func TestWireRejectsBadInput(t *testing.T) {
 		t.Errorf("resp = %v", resp)
 	}
 }
+
+func TestCallerByPackage(t *testing.T) {
+	uid := os.Getuid()
+	h := start(t, Passthrough, func(c *Config) {
+		c.Callers = []CallerRule{{Package: "ai.outgate.chat", Class: "chat"}}
+	})
+	list := filepath.Join(h.dir, "packages.list")
+	h.srv.packages.Path = list
+	write := func(pkg string) {
+		line := fmt.Sprintf("%s %d 0 /data/user/0/%s platform 3003\n", pkg, uid, pkg)
+		if err := os.WriteFile(list, []byte(line), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("com.example.other")
+	if resp := h.call(`{"op":"health"}`); resp["refused"] != "caller_not_allowed" {
+		t.Errorf("another package: %v", resp)
+	}
+	time.Sleep(10 * time.Millisecond)
+	write("ai.outgate.chat")
+	if resp := h.call(`{"op":"health"}`); resp["status"].(float64) != 200 {
+		t.Errorf("chat: %v", resp)
+	}
+}

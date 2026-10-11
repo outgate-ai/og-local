@@ -27,11 +27,14 @@ const (
 
 // CallerRule admits one kind of peer. Empty fields match anything.
 type CallerRule struct {
-	Domain         string  `json:"domain,omitempty"`
-	UID            *uint32 `json:"uid,omitempty"`
-	MinUID         uint32  `json:"min_uid,omitempty"`
-	Class          string  `json:"class"`
-	DebuggableOnly bool    `json:"debuggable_only,omitempty"`
+	Domain string  `json:"domain,omitempty"`
+	UID    *uint32 `json:"uid,omitempty"`
+	MinUID uint32  `json:"min_uid,omitempty"`
+	// Package: the peer's uid belongs to this app (packages.list), for app callers
+	// whose uid is assigned at install.
+	Package        string `json:"package,omitempty"`
+	Class          string `json:"class"`
+	DebuggableOnly bool   `json:"debuggable_only,omitempty"`
 }
 
 // Config is gate.conf plus what the command line and properties decide.
@@ -42,9 +45,11 @@ type Config struct {
 	ModelSocket  string              `json:"model_socket"`
 	AllowHTTP    []string            `json:"allow_http,omitempty"`
 	// UploadDirs are where callers' upload files may live (og-agentd's tmp/).
-	UploadDirs       []string `json:"upload_dirs,omitempty"`
-	LedgerRetentionD int      `json:"ledger_retention_days,omitempty"`
-	RegionTTLDays    int      `json:"region_ttl_days,omitempty"`
+	UploadDirs []string `json:"upload_dirs,omitempty"`
+	// PackagesList is packages.list, for package caller rules (default: Android's).
+	PackagesList     string `json:"packages_list,omitempty"`
+	LedgerRetentionD int    `json:"ledger_retention_days,omitempty"`
+	RegionTTLDays    int    `json:"region_ttl_days,omitempty"`
 
 	DataDir    string `json:"-"`
 	Mode       Mode   `json:"-"`

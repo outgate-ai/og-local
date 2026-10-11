@@ -38,6 +38,7 @@ type Server struct {
 	health   map[string]any
 	healthFn func() map[string]any
 	asks     *asks
+	packages *peer.Packages
 }
 
 // Options are the parts tests and the command line replace.
@@ -93,6 +94,10 @@ func New(cfg *Config, opts *Options) (*Server, error) {
 		health:   map[string]any{},
 		healthFn: opts.Health,
 		asks:     newAsks(opts.Approver),
+		packages: &peer.Packages{Path: cfg.PackagesList},
+	}
+	if s.packages.Path == "" {
+		s.packages.Path = peer.DefaultPackagesList
 	}
 	return s, nil
 }
@@ -182,6 +187,9 @@ func (s *Server) classify(c peer.Cred) string {
 		if c.UID < r.MinUID {
 			continue
 		}
+		if r.Package != "" && !contains(s.packages.Names(c.UID), r.Package) {
+			continue
+		}
 		return r.Class
 	}
 	return ""
@@ -241,4 +249,13 @@ func closeFDs(fds []int) {
 	for _, fd := range fds {
 		_ = syscall.Close(fd)
 	}
+}
+
+func contains(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
