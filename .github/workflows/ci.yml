@@ -81,7 +81,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TOKENIZERS_VERSION: v1.27.0
-      ORT_VERSION: 1.26.0
+      ORT_VERSION: 1.31.0
       NATIVE_DIR: ${{ github.workspace }}/.onnxlibs
     steps:
       - uses: actions/checkout@v7
@@ -125,7 +125,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TOKENIZERS_VERSION: v1.27.0
-      ORT_VERSION: 1.26.0
+      ORT_VERSION: 1.31.0
     steps:
       - uses: actions/checkout@v7
         with:
