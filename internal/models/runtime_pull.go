@@ -17,7 +17,7 @@ import (
 
 // Pinned ONNX Runtime release. Keep in sync with ORT_VERSION in the CI and
 // release workflows and scripts/stage-native.sh.
-const ortVersion = "1.26.0"
+const ortVersion = "1.31.0"
 
 const ortBaseURL = "https://github.com/microsoft/onnxruntime/releases/download"
 
@@ -29,13 +29,13 @@ type ortAsset struct {
 func ortAssetFor(goos, goarch string) (ortAsset, bool) {
 	switch goos + "/" + goarch {
 	case "linux/amd64":
-		return ortAsset{Name: "onnxruntime-linux-x64-" + ortVersion + ".tgz", Size: 8590023}, true
+		return ortAsset{Name: "onnxruntime-linux-x64-" + ortVersion + ".tgz", Size: 11408003}, true
 	case "linux/arm64":
-		return ortAsset{Name: "onnxruntime-linux-aarch64-" + ortVersion + ".tgz", Size: 7608947}, true
+		return ortAsset{Name: "onnxruntime-linux-aarch64-" + ortVersion + ".tgz", Size: 10331104}, true
 	case "darwin/arm64":
-		return ortAsset{Name: "onnxruntime-osx-arm64-" + ortVersion + ".tgz", Size: 31717869}, true
+		return ortAsset{Name: "onnxruntime-osx-arm64-" + ortVersion + ".tgz", Size: 36549009}, true
 	case "windows/amd64":
-		return ortAsset{Name: "onnxruntime-win-x64-" + ortVersion + ".zip", Size: 75675381}, true
+		return ortAsset{Name: "onnxruntime-win-x64-" + ortVersion + ".zip", Size: 82887349}, true
 	}
 	return ortAsset{}, false
 }

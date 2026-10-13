@@ -107,7 +107,7 @@ func TestPullRuntimeLinuxVersionedSoWithBareSymlink(t *testing.T) {
 	if got != "SO-BYTES" {
 		t.Errorf("lib content = %q", got)
 	}
-	if calls == 0 || lastTotal != 8590023 {
+	if calls == 0 || lastTotal != 11408003 {
 		t.Errorf("progress calls=%d total=%d, want >0 calls with the pinned asset size", calls, lastTotal)
 	}
 }
@@ -208,10 +208,10 @@ func TestOrtAssetTable(t *testing.T) {
 		goos, goarch, wantName string
 		wantSize               int64
 	}{
-		{"linux", "amd64", "onnxruntime-linux-x64-" + ortVersion + ".tgz", 8590023},
-		{"linux", "arm64", "onnxruntime-linux-aarch64-" + ortVersion + ".tgz", 7608947},
-		{"darwin", "arm64", "onnxruntime-osx-arm64-" + ortVersion + ".tgz", 31717869},
-		{"windows", "amd64", "onnxruntime-win-x64-" + ortVersion + ".zip", 75675381},
+		{"linux", "amd64", "onnxruntime-linux-x64-" + ortVersion + ".tgz", 11408003},
+		{"linux", "arm64", "onnxruntime-linux-aarch64-" + ortVersion + ".tgz", 10331104},
+		{"darwin", "arm64", "onnxruntime-osx-arm64-" + ortVersion + ".tgz", 36549009},
+		{"windows", "amd64", "onnxruntime-win-x64-" + ortVersion + ".zip", 82887349},
 	}
 	for _, c := range cases {
 		a, ok := ortAssetFor(c.goos, c.goarch)
