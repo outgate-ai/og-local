@@ -923,6 +923,24 @@ func TestWireRejectsBadInput(t *testing.T) {
 	}
 }
 
+func TestVoiceCallerHasNoRequestSocket(t *testing.T) {
+	uid := uint32(os.Getuid()) //nolint:gosec // uids fit uint32
+	h := start(t, Passthrough, func(c *Config) { c.Callers = []CallerRule{{UID: &uid, Class: "voice"}} })
+	for _, line := range []string{
+		`{"op":"health"}`,
+		`{"source":{"region_id":"on-device","adapter":"local"},"method":"POST","path":"/v1/chat/completions","body":{"messages":[]},"egress":{}}`,
+		`{"method":"GET","url":"https://api.outgate.ai/health"}`,
+		`{"op":"download","url":"https://huggingface.co/x","file":"fd:0"}`,
+	} {
+		if resp := h.call(line); resp["refused"] != "caller_not_allowed" {
+			t.Errorf("%s: %v", line, resp)
+		}
+	}
+	if n := h.rows.count(); n != 0 {
+		t.Errorf("%d ledger rows", n)
+	}
+}
+
 func TestCallerByPackage(t *testing.T) {
 	uid := os.Getuid()
 	list := filepath.Join(t.TempDir(), "packages.list")

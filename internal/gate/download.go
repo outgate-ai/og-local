@@ -24,6 +24,10 @@ const MirrorProp = "persist.outgate.models.mirror"
 // callerModels is the model manager (ai.outgate.models): downloads and health only.
 const callerModels = "models"
 
+// callerVoice is conversation mode (ai.outgate.voice): the voice model on the model front only,
+// nothing on the request socket.
+const callerVoice = "voice"
+
 const (
 	// downloadIdleMin is the shortest idle timeout of a download; there is no total timeout.
 	downloadIdleMin = 10 * time.Second

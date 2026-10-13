@@ -29,6 +29,18 @@ type credKey struct{}
 // modelPaths is the OpenAI-compatible surface OGChat's on-device region uses.
 var modelPaths = map[string]bool{"/health": true, "/v1/models": true, "/v1/chat/completions": true}
 
+// voiceAllowed is what conversation mode (ai.outgate.voice) may ask of the model front:
+// completions and the voice instance's health. The instance itself is checked once resolved.
+func voiceAllowed(r *http.Request) bool {
+	switch {
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/chat/completions":
+		return true
+	case r.Method == http.MethodGet && r.URL.Path == "/health":
+		return true
+	}
+	return false
+}
+
 // modelListTimeout bounds each instance's answer to an aggregated GET /v1/models.
 const modelListTimeout = 2 * time.Second
 
@@ -36,6 +48,7 @@ var errNoModelAnswered = errors.New("no on-device model answered")
 
 // modelInstance is one llama.cpp server of the on-device model service, by alias.
 type modelInstance struct {
+	alias  string
 	socket string
 	// display is the ledger destination: "on-device model" for og-local, "on-device/<alias>" otherwise.
 	display string
@@ -59,7 +72,7 @@ func newModels(sockets map[string]string) map[string]*modelInstance {
 			display = "on-device/" + alias
 		}
 		out[alias] = &modelInstance{
-			socket: socket, display: display, proxy: proxy,
+			alias: alias, socket: socket, display: display, proxy: proxy,
 			client: &http.Client{Transport: tr, CheckRedirect: noRedirects},
 		}
 	}
@@ -190,6 +203,10 @@ func (s *Server) modelHandler() http.Handler {
 			http.Error(w, `{"error":"caller_not_allowed"}`, http.StatusForbidden)
 			return
 		}
+		if class == callerVoice && !voiceAllowed(r) {
+			http.Error(w, `{"error":"caller_not_allowed"}`, http.StatusForbidden)
+			return
+		}
 		if !modelPaths[r.URL.Path] {
 			http.Error(w, `{"error":"not_found"}`, http.StatusNotFound)
 			return
@@ -222,6 +239,10 @@ func (s *Server) modelHandler() http.Handler {
 		if err != nil {
 			e, _ := json.Marshal(map[string]string{"error": "unknown_model", "detail": err.Error()})
 			http.Error(w, string(e), http.StatusNotFound)
+			return
+		}
+		if class == callerVoice && m.alias != DefaultModel {
+			http.Error(w, `{"error":"caller_not_allowed"}`, http.StatusForbidden)
 			return
 		}
 		if r.URL.Path == "/health" || r.URL.Path == "/v1/models" {

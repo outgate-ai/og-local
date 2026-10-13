@@ -448,3 +448,38 @@ func TestModelSocketsConfig(t *testing.T) {
 		t.Errorf("LoadConfig conflict: %v", err)
 	}
 }
+
+func TestModelFrontVoiceCaller(t *testing.T) {
+	sockets, local, agent := twoModels(t, nil)
+	uid := uint32(os.Getuid()) //nolint:gosec // uids fit uint32
+	h, cl := startFront(t, sockets, func(c *Config) { c.Callers = []CallerRule{{UID: &uid, Class: "voice"}} })
+	for _, body := range []string{`{"model":"og-local","messages":[]}`, `{"messages":[]}`} {
+		if code, got := frontDo(t, cl, "POST", "/v1/chat/completions", strings.NewReader(body)); code != 200 || !strings.Contains(got, `"og-local"`) {
+			t.Errorf("POST %s: %d %s", body, code, got)
+		}
+	}
+	if code, got := frontDo(t, cl, "GET", "/health", nil); code != 200 || !strings.Contains(got, `"alias":"og-local"`) {
+		t.Errorf("GET /health: %d %s", code, got)
+	}
+	for _, r := range [][3]string{
+		{"POST", "/v1/chat/completions", `{"model":"og-local-agent","messages":[]}`},
+		{"GET", "/health?model=og-local-agent", ""},
+		{"GET", "/v1/models", ""},
+		{"POST", "/health", `{"messages":[]}`},
+		{"GET", "/slots", ""},
+	} {
+		if code, got := frontDo(t, cl, r[0], r[1], strings.NewReader(r[2])); code != 403 || !strings.Contains(got, "caller_not_allowed") {
+			t.Errorf("%s %s %s: %d %s", r[0], r[1], r[2], code, got)
+		}
+	}
+	if a := agent.seen(); len(a) != 0 {
+		t.Errorf("og-local-agent saw %v", a)
+	}
+	if n := len(local.seen()); n != 3 {
+		t.Errorf("og-local saw %d requests", n)
+	}
+	row := h.rows.last(t)
+	if row.Caller != "voice" || row.Destination != "on-device model" || ledger.Outcome(&row) != "ON_DEVICE" || h.rows.count() != 2 {
+		t.Errorf("rows = %d, last %+v", h.rows.count(), row)
+	}
+}

@@ -187,7 +187,8 @@ func (s *Server) handle(ctx context.Context, c *net.UnixConn) {
 			s.log.Warn("caller refused", "uid", cred.UID, "domain", cred.Domain())
 		}
 		resp = wire.Refuse(req.ID, 403, "caller_not_allowed", "")
-	case class == callerModels && req.Op != "download" && req.Op != "health",
+	case class == callerVoice,
+		class == callerModels && req.Op != "download" && req.Op != "health",
 		req.Op == "download" && class != callerModels && class != "debug":
 		s.log.Warn("op refused for caller", "class", class, "op", req.Op)
 		resp = wire.Refuse(req.ID, 403, "caller_not_allowed", "")
