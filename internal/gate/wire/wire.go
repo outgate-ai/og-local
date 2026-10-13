@@ -37,7 +37,7 @@ type Request struct {
 	V  int    `json:"v,omitempty"`
 	ID string `json:"id,omitempty"`
 	// Op is empty for an upstream request; "download" fetches a model file from the
-	// mirror into a passed descriptor; "health" and "ledger" are local.
+	// mirror or Hugging Face into a passed descriptor; "health" and "ledger" are local.
 	Op     string `json:"op,omitempty"`
 	Source Source `json:"source"`
 	Method string `json:"method,omitempty"`
@@ -64,6 +64,11 @@ type Request struct {
 	// the file's exact total size.
 	Offset *int64 `json:"offset,omitempty"`
 	Size   int64  `json:"size,omitempty"`
+	// Repo and Revision make a download come from Hugging Face: file Path of model
+	// repository Repo ("owner/name") at commit Revision (40 hex). Without them it comes
+	// from the mirror.
+	Repo     string `json:"repo,omitempty"`
+	Revision string `json:"revision,omitempty"`
 	// Limit is for op "ledger".
 	Limit int `json:"limit,omitempty"`
 }

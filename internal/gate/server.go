@@ -1,6 +1,7 @@
 package gate
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -41,6 +43,9 @@ type Server struct {
 	packages *peer.Packages
 	// downloadIdle is the shortest idle timeout of a download.
 	downloadIdle time.Duration
+	// hubBase is Hugging Face's origin; hubClient follows its redirects (hubRedirect).
+	hubBase   *url.URL
+	hubClient *http.Client
 }
 
 // Options are the parts tests and the command line replace.
@@ -57,6 +62,8 @@ type Options struct {
 	Approver Approver
 	// DownloadIdle is the shortest idle timeout of a download (default 10 s; tests).
 	DownloadIdle time.Duration
+	// HubBase replaces route.HubOrigin (tests).
+	HubBase string
 }
 
 func New(cfg *Config, opts *Options) (*Server, error) {
@@ -88,6 +95,10 @@ func New(cfg *Config, opts *Options) (*Server, error) {
 	if tr == nil {
 		tr = upstreamTransport()
 	}
+	hubBase, err := url.Parse(cmp.Or(opts.HubBase, route.HubOrigin))
+	if err != nil {
+		return nil, fmt.Errorf("hub base: %w", err)
+	}
 	s := &Server{
 		cfg: cfg, log: log, masker: masker, ledger: sinks, ring: ring, started: time.Now(),
 		router: &route.Router{
@@ -98,6 +109,7 @@ func New(cfg *Config, opts *Options) (*Server, error) {
 			Providers: cfg.Providers(),
 		},
 		client:   &http.Client{Transport: tr, CheckRedirect: noRedirects},
+		hubBase:  hubBase,
 		models:   newModels(cfg.Models()),
 		health:   map[string]any{},
 		healthFn: opts.Health,
@@ -106,6 +118,7 @@ func New(cfg *Config, opts *Options) (*Server, error) {
 
 		downloadIdle: opts.DownloadIdle,
 	}
+	s.hubClient = &http.Client{Transport: tr, CheckRedirect: s.hubRedirect}
 	if s.packages.Path == "" {
 		s.packages.Path = peer.DefaultPackagesList
 	}

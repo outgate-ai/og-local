@@ -73,6 +73,10 @@ func (m *mirror) serve(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(modelData)
 	case "redirect.bin":
 		http.Redirect(w, r, "/m/model.bin", http.StatusFound)
+	case "away.bin":
+		http.Redirect(w, r, "https://models.example.test/model.bin", http.StatusFound)
+	case "loop.bin":
+		http.Redirect(w, r, r.URL.Path, http.StatusFound)
 	case "missing.bin":
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusNotFound)
@@ -509,5 +513,103 @@ func TestDownloadEndsWithItsCaller(t *testing.T) {
 	}
 	if got := fileBytes(t, g); !bytes.Equal(got, modelData) {
 		t.Errorf("file differs (%d bytes)", len(got))
+	}
+}
+
+const hubRev = "0123456789abcdef0123456789abcdef01234567"
+
+func hubReq(repo, rev, p string, offset int64) string {
+	return fmt.Sprintf(`{"v":1,"id":"dl-1","op":"download","repo":%q,"revision":%q,"path":%q,"offset":%d,"size":%d,"file":"fd:0"}`,
+		repo, rev, p, offset, modelSize)
+}
+
+// startHub starts a gate for the models caller whose Hugging Face origin is the test mirror.
+func startHub(t *testing.T, m *mirror) *harness {
+	t.Helper()
+	uid := uint32(os.Getuid()) //nolint:gosec // uids fit uint32
+	return startOpts(t, Mask, func(c *Config) {
+		c.Callers = []CallerRule{{UID: &uid, Class: "models"}}
+	}, nil, nil, func(o *Options) {
+		o.Transport = m.srv.Client().Transport
+		o.HubBase = m.srv.URL
+	})
+}
+
+func TestDownloadHub(t *testing.T) {
+	m := newMirror(t)
+	setMirror(t, "")
+	h := startHub(t, m)
+	f := partFile(t, modelData[:1000])
+	resp := h.callFD(hubReq("ggml-org/model-GGUF", hubRev, "model.bin", 1000), int(f.Fd()))
+	if resp["status"].(float64) != 206 || resp["refused"] != nil || resp["class"] != "mirror" || resp["start"] != float64(1000) ||
+		num(resp["written"]) != modelSize-1000 || resp["complete"] != true {
+		t.Fatalf("resp = %v", resp)
+	}
+	if got := fileBytes(t, f); !bytes.Equal(got, modelData) {
+		t.Errorf("file: %d bytes, want the model's %d", len(got), modelSize)
+	}
+	hits := m.seen()
+	if len(hits) != 1 || hits[0].Path != "/ggml-org/model-GGUF/resolve/"+hubRev+"/model.bin" || hits[0].Range != "bytes=1000-" ||
+		hits[0].UserAgent != "og-gate/test" || hits[0].AcceptEncoding != "identity" {
+		t.Errorf("hub saw %+v", hits)
+	}
+	row := h.rows.last(t)
+	if row.Destination != "127.0.0.1" || row.Class != "mirror" || row.Method != "GET" || row.EgressKind != "model" ||
+		row.PathClass != "/ggml-org/model-GGUF/resolve/:id/model.bin" || row.BytesIn != modelSize-1000 || row.Status != 206 ||
+		row.Blocked || row.Content {
+		t.Errorf("row = %+v", row)
+	}
+}
+
+func TestDownloadHubRedirects(t *testing.T) {
+	m := newMirror(t)
+	h := startHub(t, m)
+	// Within Hugging Face's hosts: followed, with the Range.
+	f := partFile(t, modelData[:10])
+	resp := h.callFD(hubReq("o/r", hubRev, "redirect.bin", 10), int(f.Fd()))
+	if resp["status"].(float64) != 206 || resp["complete"] != true {
+		t.Fatalf("resp = %v", resp)
+	}
+	if got := fileBytes(t, f); !bytes.Equal(got, modelData) {
+		t.Errorf("file: %d bytes, want the model's %d", len(got), modelSize)
+	}
+	if hits := m.seen(); len(hits) != 2 || hits[1].Path != "/m/model.bin" || hits[1].Range != "bytes=10-" {
+		t.Errorf("hub saw %+v", hits)
+	}
+	// Anywhere else, or too many hops: refused, nothing written.
+	for p, hops := range map[string]int{"away.bin": 1, "loop.bin": 1 + hubMaxRedirects} {
+		before := len(m.seen())
+		g := partFile(t, modelData[:10])
+		resp = h.callFD(hubReq("o/r", hubRev, p, 10), int(g.Fd()))
+		if resp["refused"] != "redirect_not_allowed" || resp["status"].(float64) != 502 || resp["written"] != nil {
+			t.Errorf("%s: %v", p, resp)
+		}
+		if row := h.rows.last(t); !row.Blocked || row.BlockReason != "redirect_not_allowed" || row.BytesIn != 0 {
+			t.Errorf("%s: row = %+v", p, row)
+		}
+		if got := fileBytes(t, g); !bytes.Equal(got, modelData[:10]) {
+			t.Errorf("%s: the file changed (%d bytes)", p, len(got))
+		}
+		if n := len(m.seen()) - before; n != hops {
+			t.Errorf("%s: %d requests, want %d", p, n, hops)
+		}
+	}
+}
+
+func TestDownloadHubBadRepo(t *testing.T) {
+	m := newMirror(t)
+	h := startHub(t, m)
+	f := partFile(t, nil)
+	for _, c := range [][3]string{
+		{"gemma", hubRev, "model.bin"}, {"o/r", "main", "model.bin"}, {"o/r", "", "model.bin"},
+		{"", hubRev, "model.bin"}, {"o/r", hubRev, "../model.bin"}, {"o/r/x", hubRev, "model.bin"},
+	} {
+		resp := h.callFD(hubReq(c[0], c[1], c[2], 0), int(f.Fd()))
+		if resp["refused"] != "bad_path" || resp["status"].(float64) != 400 {
+			t.Errorf("%q: %v", c, resp)
+		}
+	}
+	if n := len(m.seen()); n != 0 {
+		t.Errorf("the hub was reached %d times", n)
 	}
 }

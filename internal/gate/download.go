@@ -34,13 +34,17 @@ const (
 )
 
 var (
-	errIdle       = errors.New("idle timeout")
-	errCallerGone = errors.New("caller hung up")
+	errIdle        = errors.New("idle timeout")
+	errCallerGone  = errors.New("caller hung up")
+	errHubRedirect = errors.New("redirect not allowed")
 )
 
-// download fetches path from the model mirror into the descriptor passed with the
-// request, from offset on, and reports what it wrote. The gate only counts the
-// bytes; the caller verifies them.
+// hubMaxRedirects bounds a Hugging Face download's redirects (resolve, then its file CDN).
+const hubMaxRedirects = 5
+
+// download fetches path from the model mirror, or from a Hugging Face repository at a
+// pinned commit, into the descriptor passed with the request, from offset on, and
+// reports what it wrote. The gate only counts the bytes; the caller verifies them.
 func (s *Server) download(ctx context.Context, class string, cred peer.Cred, req *wire.Request, fds []int) *wire.Response {
 	began := time.Now()
 	row := ledger.Row{
@@ -72,15 +76,28 @@ func (s *Server) download(ctx context.Context, class string, cred peer.Cred, req
 		return reply(wire.Refuse(req.ID, status, reason, detail))
 	}
 
-	base, err := s.router.MirrorBase(sysprop.Get(MirrorProp, ""))
-	if err != nil {
-		return refuse(503, "mirror_not_configured", err.Error())
-	}
-	row.Destination = base.Hostname()
-	dest, err := route.Mirror(base, req.Path)
-	if err != nil {
-		row.PathClass = route.PathClass(req.Path)
-		return refuse(400, "bad_path", "path must be a relative file path under the mirror")
+	var dest *route.Destination
+	client := s.client
+	if req.Repo != "" || req.Revision != "" {
+		row.Destination = s.hubBase.Hostname()
+		d, err := route.Hub(s.hubBase, req.Repo, req.Revision, req.Path)
+		if err != nil {
+			row.PathClass = route.PathClass(req.Path)
+			return refuse(400, "bad_path", "repo must be owner/name, revision a 40-hex commit and path a relative file path")
+		}
+		dest, client = d, s.hubClient
+	} else {
+		base, err := s.router.MirrorBase(sysprop.Get(MirrorProp, ""))
+		if err != nil {
+			return refuse(503, "mirror_not_configured", err.Error())
+		}
+		row.Destination = base.Hostname()
+		d, err := route.Mirror(base, req.Path)
+		if err != nil {
+			row.PathClass = route.PathClass(req.Path)
+			return refuse(400, "bad_path", "path must be a relative file path under the mirror")
+		}
+		dest = d
 	}
 	row.PathClass = route.PathClass(dest.URL.Path)
 	if req.Size <= 0 || req.Offset == nil || *req.Offset < 0 || *req.Offset >= req.Size {
@@ -126,15 +143,18 @@ func (s *Server) download(ctx context.Context, class string, cred peer.Cred, req
 
 	hreq, err := http.NewRequestWithContext(ctx, http.MethodGet, dest.URL.String(), http.NoBody)
 	if err != nil {
-		return refuse(400, "bad_path", "path must be a relative file path under the mirror")
+		return refuse(400, "bad_path", "path must be a relative file path")
 	}
 	hreq.Header.Set("User-Agent", "og-gate/"+s.cfg.Version)
 	hreq.Header.Set("Accept-Encoding", "identity")
 	if offset > 0 {
 		hreq.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 	}
-	hresp, err := s.client.Do(hreq)
+	hresp, err := client.Do(hreq)
 	if err != nil {
+		if errors.Is(err, errHubRedirect) {
+			return refuse(502, "redirect_not_allowed", "Hugging Face redirected outside its own hosts")
+		}
 		return failUpstream(err)
 	}
 	defer func() { _ = hresp.Body.Close() }()
@@ -258,6 +278,15 @@ func untilHangup(ctx context.Context, c *net.UnixConn) (context.Context, func())
 		}
 	}()
 	return ctx, func() { cancel(nil) }
+}
+
+// hubRedirect lets a Hugging Face download follow a few redirects within Hugging Face's
+// hosts (route.HubRedirect); the request's Range goes along.
+func (s *Server) hubRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) > hubMaxRedirects || !route.HubRedirect(s.hubBase, req.URL) {
+		return errHubRedirect
+	}
+	return nil
 }
 
 // mirrorHealth says whether a usable model mirror is configured, and its host.
