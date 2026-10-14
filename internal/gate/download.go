@@ -33,6 +33,10 @@ const callerVoice = "voice"
 // on the request socket.
 const callerTranscribe = "transcribe"
 
+// callerLocalAgent is the on-device agent (ai.outgate.localagent): the agent model on the model front
+// only, nothing on the request socket.
+const callerLocalAgent = "local-agent"
+
 const (
 	// downloadIdleMin is the shortest idle timeout of a download; there is no total timeout.
 	downloadIdleMin = 10 * time.Second

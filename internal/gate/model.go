@@ -29,12 +29,12 @@ type credKey struct{}
 // modelPaths is the OpenAI-compatible surface OGChat's on-device region uses.
 var modelPaths = map[string]bool{"/health": true, "/v1/models": true, "/v1/chat/completions": true}
 
-// transcribeAgentModel is the agent instance's alias (og-models-api CONTRACT.md: run/agent.sock).
-const transcribeAgentModel = "og-local-agent"
+// agentModel is the agent instance's alias (og-models-api CONTRACT.md: run/agent.sock).
+const agentModel = "og-local-agent"
 
-// voiceAllowed is what conversation mode (ai.outgate.voice) and transcription's summaries
-// (ai.outgate.transcribe) may ask of the model front: completions and health. The instance itself
-// is checked once resolved.
+// voiceAllowed is what conversation mode (ai.outgate.voice), transcription's summaries
+// (ai.outgate.transcribe) and the on-device agent (ai.outgate.localagent) may ask of the model front:
+// completions and health. The instance itself is checked once resolved.
 func voiceAllowed(r *http.Request) bool {
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/chat/completions":
@@ -207,7 +207,7 @@ func (s *Server) modelHandler() http.Handler {
 			http.Error(w, `{"error":"caller_not_allowed"}`, http.StatusForbidden)
 			return
 		}
-		if (class == callerVoice || class == callerTranscribe) && !voiceAllowed(r) {
+		if (class == callerVoice || class == callerTranscribe || class == callerLocalAgent) && !voiceAllowed(r) {
 			http.Error(w, `{"error":"caller_not_allowed"}`, http.StatusForbidden)
 			return
 		}
@@ -249,7 +249,12 @@ func (s *Server) modelHandler() http.Handler {
 			http.Error(w, `{"error":"caller_not_allowed"}`, http.StatusForbidden)
 			return
 		}
-		if class == callerTranscribe && m.alias != DefaultModel && m.alias != transcribeAgentModel {
+		if class == callerTranscribe && m.alias != DefaultModel && m.alias != agentModel {
+			http.Error(w, `{"error":"caller_not_allowed"}`, http.StatusForbidden)
+			return
+		}
+		// The agent never falls back to another model: only its own instance.
+		if class == callerLocalAgent && m.alias != agentModel {
 			http.Error(w, `{"error":"caller_not_allowed"}`, http.StatusForbidden)
 			return
 		}
