@@ -483,3 +483,37 @@ func TestModelFrontVoiceCaller(t *testing.T) {
 		t.Errorf("rows = %d, last %+v", h.rows.count(), row)
 	}
 }
+
+func TestModelFrontTranscribeCaller(t *testing.T) {
+	sockets, local, agent := twoModels(t, nil)
+	uid := uint32(os.Getuid()) //nolint:gosec // uids fit uint32
+	h, cl := startFront(t, sockets, func(c *Config) { c.Callers = []CallerRule{{UID: &uid, Class: "transcribe"}} })
+	for _, r := range [][3]string{
+		{"POST", "/v1/chat/completions", `{"model":"og-local-agent","messages":[]}`},
+		{"POST", "/v1/chat/completions", `{"model":"og-local","messages":[]}`},
+		{"GET", "/health?model=og-local-agent", ""},
+	} {
+		if code, got := frontDo(t, cl, r[0], r[1], strings.NewReader(r[2])); code != 200 {
+			t.Errorf("%s %s %s: %d %s", r[0], r[1], r[2], code, got)
+		}
+	}
+	for _, r := range [][3]string{
+		{"GET", "/v1/models", ""},
+		{"POST", "/health", `{"messages":[]}`},
+		{"GET", "/slots", ""},
+	} {
+		if code, got := frontDo(t, cl, r[0], r[1], strings.NewReader(r[2])); code != 403 || !strings.Contains(got, "caller_not_allowed") {
+			t.Errorf("%s %s %s: %d %s", r[0], r[1], r[2], code, got)
+		}
+	}
+	if n := len(agent.seen()); n != 2 {
+		t.Errorf("og-local-agent saw %d requests", n)
+	}
+	if n := len(local.seen()); n != 1 {
+		t.Errorf("og-local saw %d requests", n)
+	}
+	row := h.rows.last(t)
+	if row.Caller != "transcribe" || ledger.Outcome(&row) != "ON_DEVICE" {
+		t.Errorf("last row %+v", row)
+	}
+}

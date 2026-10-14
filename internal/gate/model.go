@@ -29,8 +29,12 @@ type credKey struct{}
 // modelPaths is the OpenAI-compatible surface OGChat's on-device region uses.
 var modelPaths = map[string]bool{"/health": true, "/v1/models": true, "/v1/chat/completions": true}
 
-// voiceAllowed is what conversation mode (ai.outgate.voice) may ask of the model front:
-// completions and the voice instance's health. The instance itself is checked once resolved.
+// transcribeAgentModel is the agent instance's alias (og-models-api CONTRACT.md: run/agent.sock).
+const transcribeAgentModel = "og-local-agent"
+
+// voiceAllowed is what conversation mode (ai.outgate.voice) and transcription's summaries
+// (ai.outgate.transcribe) may ask of the model front: completions and health. The instance itself
+// is checked once resolved.
 func voiceAllowed(r *http.Request) bool {
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/chat/completions":
@@ -203,7 +207,7 @@ func (s *Server) modelHandler() http.Handler {
 			http.Error(w, `{"error":"caller_not_allowed"}`, http.StatusForbidden)
 			return
 		}
-		if class == callerVoice && !voiceAllowed(r) {
+		if (class == callerVoice || class == callerTranscribe) && !voiceAllowed(r) {
 			http.Error(w, `{"error":"caller_not_allowed"}`, http.StatusForbidden)
 			return
 		}
@@ -242,6 +246,10 @@ func (s *Server) modelHandler() http.Handler {
 			return
 		}
 		if class == callerVoice && m.alias != DefaultModel {
+			http.Error(w, `{"error":"caller_not_allowed"}`, http.StatusForbidden)
+			return
+		}
+		if class == callerTranscribe && m.alias != DefaultModel && m.alias != transcribeAgentModel {
 			http.Error(w, `{"error":"caller_not_allowed"}`, http.StatusForbidden)
 			return
 		}

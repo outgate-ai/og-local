@@ -28,6 +28,11 @@ const callerModels = "models"
 // nothing on the request socket.
 const callerVoice = "voice"
 
+// callerTranscribe is on-device transcription (ai.outgate.transcribe): summaries of its transcripts
+// on the agent model (the voice model where the agent can't run), on the model front only, nothing
+// on the request socket.
+const callerTranscribe = "transcribe"
+
 const (
 	// downloadIdleMin is the shortest idle timeout of a download; there is no total timeout.
 	downloadIdleMin = 10 * time.Second
