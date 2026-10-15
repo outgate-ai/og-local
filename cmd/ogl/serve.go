@@ -29,6 +29,7 @@ import (
 const serveUsage = `Usage:
   ogl serve [--config FILE] [--data DIR] [--socket NAME | --listen PATH]
             [--model-socket NAME | --model-listen PATH] [--mode passthrough|mask]
+            [--tunnel-socket NAME | --tunnel-listen PATH] [--tunnel-dir DIR]
 
 Runs the OG OS gate: one JSON request per connection on a unix socket (init's
 socket NAME, or PATH), forwarded to Outgate hosts (and the phone region's external
@@ -37,7 +38,8 @@ masked only for destination classes the config marks mask (the providers); traff
 to Outgate is not, its regions mask with their own guardrail. Model files come
 from the model mirror (persist.outgate.models.mirror) into a descriptor the model
 manager passes. --mode defaults to persist.outgate.gate.mode, else mask;
-passthrough (no masking) is honoured only on debuggable builds.
+passthrough (no masking) is honoured only on debuggable builds. The tunnel front
+serves the on-device model to the owner's Cloudflare tunnel as --tunnel-dir says.
 `
 
 func runServe(args []string) int {
@@ -49,6 +51,9 @@ func runServe(args []string) int {
 	listen := fs.String("listen", "", "bind this socket path instead of the init socket")
 	modelSocket := fs.String("model-socket", "og_gate_model", "init socket name for the on-device model front")
 	modelListen := fs.String("model-listen", "", "bind this socket path for the on-device model front")
+	tunnelSocket := fs.String("tunnel-socket", "og_gate_tunnel", "init socket name for the tunnel front")
+	tunnelListen := fs.String("tunnel-listen", "", "bind this socket path for the tunnel front")
+	tunnelDir := fs.String("tunnel-dir", "/data/misc_ce/0/outgate-tunnel", "credential-encrypted dir of the tunnel's settings and client keys")
 	mode := fs.String("mode", "", "passthrough or mask")
 	ceDir := fs.String("ce-dir", "/data/misc_ce/0/outgate-gate", "credential-encrypted dir for the placeholder map and app tenancies")
 	model := fs.String("model", "openai/privacy-filter-q4", "detector model (og-local catalog name)")
@@ -81,7 +86,7 @@ func runServe(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
 
-	opts := gate.Options{Logger: log}
+	opts := gate.Options{Logger: log, TunnelDir: *tunnelDir}
 	var m *mask.Masker
 	if cfg.Mode == gate.Mask {
 		m = newMasker(*ceDir, *model, log)
@@ -151,11 +156,16 @@ func runServe(args []string) int {
 		go reportHealth(ctx, link, srv, &cfg, m)
 	}
 
-	errc := make(chan error, 2)
+	errc := make(chan error, 3)
 	if mln, err := openListener(*modelListen, *modelSocket); err == nil {
 		go func() { errc <- srv.ServeModel(ctx, mln) }()
 	} else {
 		log.Info("no on-device model front", "err", err)
+	}
+	if tln, err := openListener(*tunnelListen, *tunnelSocket); err == nil {
+		go func() { errc <- srv.ServeTunnel(ctx, tln) }()
+	} else {
+		log.Info("no tunnel front", "err", err)
 	}
 	log.Info("gate serving", "version", version, "mode", cfg.Mode, "debuggable", cfg.Debuggable,
 		"masking_needed", cfg.MaskingNeeded(), "providers", len(cfg.Providers()))
