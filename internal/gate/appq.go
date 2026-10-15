@@ -20,8 +20,9 @@ import (
 
 // App tenancies (og-os M12c, Q6): what the gate does with its sealed store (internal/gate/appq).
 // A store rule keeps a tenancy's package out of global's response to OGChat and seals it; the
-// appq_* ops list, remove and (debuggable builds) import tenancies; the bring-up's plain DE packages
-// are moved out; each change is a lifecycle row in the ledger.
+// appq_* ops list, remove and (debuggable builds) import tenancies; a 401 to a tenancy's request
+// deletes it (revoked on the web); the bring-up's plain DE packages are moved out; each change is a
+// lifecycle row in the ledger.
 
 // leaveTimeout bounds the control/leave a removal fires (best effort).
 const leaveTimeout = 5 * time.Second
@@ -189,13 +190,21 @@ func (s *Server) storeNotReady(method string, dest *route.Destination) (status i
 	return status, code, "app tenancies can't be stored now: " + err.Error(), true
 }
 
-// appqResponse is what the gate does with an upstream response for app tenancies: a store rule keeps
-// a tenancy's package out of a 2xx from global, sealed, or refuses the response when it can't (the
-// package never passes).
+// appqResponse is what the gate does with an upstream response for app tenancies: a 401 to a
+// tenancy's request deletes the tenancy (revoked on the web); a store rule keeps a tenancy's package
+// out of a 2xx from global, sealed, or refuses the response when it can't (the package never passes).
 func (s *Server) appqResponse(ctx context.Context, class string, uid uint32, req *wire.Request, method string,
 	dest *route.Destination, row *ledger.Row, status int, data []byte,
 ) ([]byte, *wire.Response) {
-	if dest.Tenancy != "" || status/100 != 2 {
+	if dest.Tenancy != "" {
+		if revoked(status, data) && ctx.Value(leaving{}) == nil {
+			if i, ok := s.appq.Revoke(dest.Tenancy, dest.TenancyGen); ok {
+				s.recordAppq(ledger.AppqRevoked, class, uid, i, row.PathClass, status)
+			}
+		}
+		return data, nil
+	}
+	if status/100 != 2 {
 		return data, nil
 	}
 	rule := s.storeRule(method, dest)
@@ -260,6 +269,38 @@ func (s *Server) keepTenancy(rule *StoreRule, req *wire.Request, data []byte) ([
 		return nil, nil, fmt.Errorf("tenancy %s: %w", name, err)
 	}
 	return out, &i, nil
+}
+
+// revoked: the app's endpoints refused the tenancy's token. Outgate answers a revoked (or unknown)
+// participant token 401 invalid_token. A 403 counts only with that code: Outgate's 403s say the
+// manifest doesn't declare a hook or commands, and a proxy's 403 says nothing about the token.
+func revoked(status int, body []byte) bool {
+	switch status {
+	case 401:
+		return true
+	case 403:
+		return errorCode(body) == "invalid_token"
+	}
+	return false
+}
+
+// errorCode is body's error code: {"error": {"code": …}} or {"error": "…"}.
+func errorCode(body []byte) string {
+	var b struct {
+		Error json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(body, &b) != nil || len(b.Error) == 0 {
+		return ""
+	}
+	var code string
+	if json.Unmarshal(b.Error, &code) == nil {
+		return code
+	}
+	var obj struct {
+		Code string `json:"code"`
+	}
+	_ = json.Unmarshal(b.Error, &obj)
+	return obj.Code
 }
 
 // matchPath matches a path against a rule's pattern: ":name" segments match any one segment.

@@ -363,6 +363,36 @@ func TestAppqRemove(t *testing.T) {
 	}
 }
 
+func TestAppqRevokedOnTheWeb(t *testing.T) {
+	agent, st := startAppq(t, "agent", nil, nil)
+	for name, app := range map[string]string{"gone": "app_gone", "nodecl": "app_nodecl", "forbidden": "app_403"} {
+		if _, err := st.Add(name, []byte(appPackage(agent.up.srv.URL, app)), appq.Info{AccountID: "acct-1"}, appq.OriginStore); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if resp := agent.call(fmt.Sprintf(popLine, "gone")); resp["status"].(float64) != 401 {
+		t.Fatalf("pop = %v", resp)
+	}
+	revoked := agent.rows.events(ledger.AppqRevoked)
+	if len(revoked) != 1 || revoked[0].RegionID != "appq:gone" || revoked[0].Status != 401 || revoked[0].AppID != "app_gone" ||
+		revoked[0].PathClass != "/api/v1/hooks/apps/:id/commands/pop" || revoked[0].AccountID != "acct-1" {
+		t.Errorf("revoked rows = %+v", revoked)
+	}
+	if resp := agent.call(fmt.Sprintf(popLine, "gone")); resp["refused"] != "unknown_region" {
+		t.Errorf("revoked tenancy still used: %v", resp)
+	}
+	if n := len(agent.rows.events(ledger.AppqRevoked)); n != 1 {
+		t.Errorf("%d revoked rows", n)
+	}
+	// A 403 that says the manifest declares no such hook isn't a revocation; one with invalid_token is.
+	agent.call(`{"source":{"region_id":"appq:nodecl"},"method":"POST","path":"/?hook=events","body":{"kind":"gate.open"},"egress":{"kind":"gate"}}`)
+	agent.call(fmt.Sprintf(popLine, "forbidden"))
+	resp := agent.call(`{"op":"appq_list"}`)
+	if list, _ := resp["body"].([]any); len(list) != 1 || list[0].(map[string]any)["name"] != "nodecl" {
+		t.Errorf("list = %v", resp)
+	}
+}
+
 func TestAppqTokenFromTheSealedStore(t *testing.T) {
 	agent, st := startAppq(t, "agent", nil, nil)
 	if _, err := st.Add("travel", []byte(appPackage(agent.up.srv.URL, "app_1")), appq.Info{}, appq.OriginImport); err != nil {
