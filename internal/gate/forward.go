@@ -121,6 +121,9 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 		}
 		return refuse(status, reason, err.Error())
 	}
+	if status, code, detail, refused := s.storeNotReady(method, dest); refused {
+		return refuse(status, code, detail)
+	}
 	path := req.Path
 	if dest.URL != nil {
 		path = dest.URL.Path
@@ -265,6 +268,10 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 		if n := s.router.Regions.LearnFrom(s.cfg.Learn, row.PathClass, data, dest.Env); n > 0 {
 			s.log.Info("region hosts learned", "count", n, "env", dest.Env)
 		}
+	}
+	data, refusal := s.appqResponse(ctx, class, cred.UID, req, method, dest, &row, hresp.StatusCode, data)
+	if refusal != nil {
+		return refusal
 	}
 	call.RespContentType = hresp.Header.Get("Content-Type")
 	// Placeholders this gate minted come back filled in, whatever the class: those of

@@ -18,6 +18,10 @@ import (
 
 const storeRoute = "/api/v1/agents/devices/dev_0123456789abcdef/app-tenancies"
 
+func appTenancyRule() StoreRule {
+	return StoreRule{Path: "/api/v1/agents/devices/:id/app-tenancies", Method: "POST", Field: "package", NameField: "tenancy.name", Kind: "appq"}
+}
+
 func testToken(app string) string { return "tok_test_" + app }
 
 // appPackage is an .ogpkg package of app on the test upstream.
@@ -72,6 +76,7 @@ func startAppq(t *testing.T, class string, st *appq.Store, mutate func(*Config))
 	uid := uint32(os.Getuid()) //nolint:gosec // uids fit uint32
 	h := startOpts(t, Passthrough, func(c *Config) {
 		c.Callers = []CallerRule{{UID: &uid, Class: class}}
+		c.Store = []StoreRule{appTenancyRule()}
 		if mutate != nil {
 			mutate(c)
 		}
@@ -98,7 +103,162 @@ func (r *rec) events(kind string) []ledger.Row {
 	return out
 }
 
+func (r *rec) contains(s string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	b, _ := json.Marshal(r.rows)
+	return strings.Contains(string(b), s)
+}
+
 const popLine = `{"source":{"account_id":"acct-1","region_id":"appq:%s","adapter":"appq"},"method":"POST","path":"/commands/pop","body":{},"egress":{"kind":"poll"},"timeout_ms":10000}`
+
+func TestAppqStoreRuleKeepsThePackage(t *testing.T) {
+	chat, st := startAppq(t, "chat", nil, nil)
+	line := `{"source":{"account_id":"acct-1","region_id":"global","adapter":"chat"},"method":"POST","path":"` + storeRoute + `","body":{"app_id":"app_1"},"egress":{}}`
+	out := chat.raw(line)
+	var resp struct {
+		Status int `json:"status"`
+		Body   struct {
+			Tenancy map[string]any `json:"tenancy"`
+			Package map[string]any `json:"package"`
+		} `json:"body"`
+	}
+	_ = json.Unmarshal([]byte(out), &resp)
+	if resp.Status != 201 || resp.Body.Package["stored"] != "travel" || len(resp.Body.Package) != 1 || resp.Body.Tenancy["thread_id"] != "thr-1" {
+		t.Fatalf("response = %s", out)
+	}
+	if strings.Contains(out, testToken("app_1")) || strings.Contains(out, "join") {
+		t.Fatalf("the package reached the caller: %s", out)
+	}
+	added := chat.rows.events(ledger.AppqAdded)
+	if len(added) != 1 || added[0].AppID != "app_1" || added[0].Participant != "dev-test-phone" || added[0].Caller != "chat" ||
+		added[0].RegionID != "appq:travel" || added[0].AccountID != "acct-1" || added[0].PathClass != "/api/v1/agents/devices/:id/app-tenancies" ||
+		added[0].Status != 201 || added[0].Kind != "other" || added[0].Method != "" || added[0].Destination != "127.0.0.1" {
+		t.Errorf("added rows = %+v", added)
+	}
+	if chat.rows.contains(testToken("app_1")) {
+		t.Error("a ledger row holds the token")
+	}
+	if tot := chat.srv.ring.Totals(); tot.Requests != 1 {
+		t.Errorf("lifecycle rows counted as requests: %+v", tot)
+	}
+
+	// The agent runtime (another caller, the same store) lists it and its requests carry the token.
+	agent, _ := startAppq(t, "agent", st, nil)
+	list := agent.raw(`{"op":"appq_list"}`)
+	var got struct {
+		Status int         `json:"status"`
+		Body   []appq.Info `json:"body"`
+	}
+	_ = json.Unmarshal([]byte(list), &got)
+	if got.Status != 200 || len(got.Body) != 1 {
+		t.Fatalf("list = %s", list)
+	}
+	if i := got.Body[0]; i.Name != "travel" || i.Participant != "dev-test-phone" || i.AppID != "app_1" || i.AppName != "Travel" ||
+		i.ThreadID != "thr-1" || i.AccountID != "acct-1" || i.State != appq.StateActive || i.AddedAt.IsZero() {
+		t.Errorf("listed %+v", i)
+	}
+	if strings.Contains(list, testToken("app_1")) {
+		t.Error("appq_list shows the token")
+	}
+	if resp := agent.call(fmt.Sprintf(popLine, "travel")); resp["status"].(float64) != 200 {
+		t.Fatalf("pop = %v", resp)
+	}
+	if u := agent.up.last(); u.Path != "/api/v1/hooks/apps/app_1/commands/pop" || u.Header.Get("X-Outgate-Hook-Token") != testToken("app_1") {
+		t.Errorf("upstream got %+v", u)
+	}
+	resp2 := agent.call(`{"source":{"region_id":"appq:travel","adapter":"appq"},"method":"POST","path":"/?hook=events","body":{"kind":"gate.open"},"egress":{"kind":"gate"}}`)
+	if resp2["status"].(float64) != 200 || agent.up.last().Query != "hook=events" || agent.up.last().Header.Get("X-Outgate-Hook-Token") != testToken("app_1") {
+		t.Errorf("hook fire: %v %+v", resp2, agent.up.last())
+	}
+	if h := agent.call(`{"op":"health"}`); h["body"].(map[string]any)["appq"].(map[string]any)["tenancies"] != 1.0 {
+		t.Errorf("health = %v", h["body"].(map[string]any)["appq"])
+	}
+
+	// Another method on the route, or another route: nothing kept.
+	chat.call(`{"source":{"region_id":"global"},"method":"GET","path":"` + storeRoute + `","egress":{}}`)
+	if n := len(chat.rows.events(ledger.AppqAdded)); n != 1 {
+		t.Errorf("a GET added a tenancy (%d)", n)
+	}
+}
+
+func TestAppqStoreRuleFailsClosed(t *testing.T) {
+	line := `{"source":{"region_id":"global","adapter":"chat"},"method":"POST","path":"` + storeRoute + `","body":{"app_id":"app_1"},"egress":{}}`
+
+	// The keystore refuses: global answered, but the package doesn't pass.
+	ce := filepath.Join(t.TempDir(), "ce")
+	_ = os.Mkdir(ce, 0o700)
+	k := sealtest.New(t)
+	k.Down.Store(true)
+	h, st := startAppq(t, "chat", appq.New(filepath.Join(ce, "appq"), k), nil)
+	out := h.raw(line)
+	if !strings.Contains(out, `"refused":"keystore_unavailable"`) || !strings.Contains(out, `"status":503`) || strings.Contains(out, testToken("app_1")) {
+		t.Errorf("keystore down: %s", out)
+	}
+	if row := h.rows.last(t); row.Error != "keystore_unavailable" || row.Status != 201 {
+		t.Errorf("row = %+v", row)
+	}
+	if list, _ := st.List(); len(list) != 0 || len(h.rows.events(ledger.AppqAdded)) != 0 {
+		t.Errorf("stored anyway: %v", list)
+	}
+
+	// CE storage locked, or no og-gate-link: refused before global mints anything.
+	for name, s := range map[string]*appq.Store{
+		"storage_locked":   appq.New(filepath.Join(t.TempDir(), "no-ce", "appq"), sealtest.New(t)),
+		"link_unavailable": appq.New(filepath.Join(ce, "appq"), nil),
+	} {
+		h, _ := startAppq(t, "chat", s, nil)
+		out := h.raw(line)
+		if !strings.Contains(out, `"refused":"`+name+`"`) || len(h.up.got) != 0 {
+			t.Errorf("%s: %s (upstream calls %d)", name, out, len(h.up.got))
+		}
+	}
+
+	// A package without a usable tenancy name.
+	h2, _ := startAppq(t, "chat", nil, func(c *Config) {
+		c.Store = append(c.Store, StoreRule{Path: "/api/v1/agents/devices/:id/app-tenancies/noname", Method: "POST", Field: "package", NameField: "tenancy.name", Kind: "appq"})
+	})
+	out = h2.raw(`{"source":{"region_id":"global"},"method":"POST","path":"` + storeRoute + `/noname","body":{},"egress":{}}`)
+	if !strings.Contains(out, `"refused":"tenancy_not_stored"`) || strings.Contains(out, testToken("app_1")) {
+		t.Errorf("no name: %s", out)
+	}
+}
+
+func TestStoreRuleConfig(t *testing.T) {
+	// The rule as the device's gate.conf writes it.
+	conf := filepath.Join(t.TempDir(), "gate.conf")
+	_ = os.WriteFile(conf, []byte(`{"store": [{"path": "/api/v1/agents/devices/:id/app-tenancies", "method": "POST", "field": "package", "name_field": "tenancy.name", "kind": "appq"}]}`), 0o600)
+	c, err := LoadConfig(conf)
+	if err != nil || len(c.Store) != 1 || c.Store[0] != appTenancyRule() {
+		t.Fatalf("LoadConfig: %+v %v", c.Store, err)
+	}
+	good := appTenancyRule()
+	for _, change := range []func(*StoreRule){
+		func(r *StoreRule) { r.Kind = "region" },
+		func(r *StoreRule) { r.Method = "FETCH" },
+		func(r *StoreRule) { r.Path = "api/v1/x" },
+		func(r *StoreRule) { r.Path = "/x?y=1" },
+		func(r *StoreRule) { r.Field = "" },
+		func(r *StoreRule) { r.NameField = "tenancy..name" },
+		func(r *StoreRule) { r.NameField = "package" },
+		func(r *StoreRule) { r.Field = "items[].package" },
+	} {
+		r := good
+		change(&r)
+		c := Config{Store: []StoreRule{r}}
+		if err := c.Validate(); err == nil {
+			t.Errorf("accepted %+v", r)
+		}
+	}
+	for pattern, paths := range map[string][2]string{
+		"/api/v1/agents/devices/:id/app-tenancies": {"/api/v1/agents/devices/dev_1/app-tenancies", "/api/v1/agents/devices//app-tenancies"},
+		"/a/:x/b": {"/a/1/b/", "/a/1/b/c"},
+	} {
+		if !matchPath(pattern, paths[0]) || matchPath(pattern, paths[1]) {
+			t.Errorf("matchPath(%q): %q should match, %q not", pattern, paths[0], paths[1])
+		}
+	}
+}
 
 func TestAppqOpsByCaller(t *testing.T) {
 	pkg := func(h *harness) string { return appPackage(h.up.srv.URL, "app_1") }

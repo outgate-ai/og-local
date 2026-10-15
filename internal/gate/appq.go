@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/outgate-ai/og-local/internal/gate/appq"
@@ -17,8 +19,9 @@ import (
 )
 
 // App tenancies (og-os M12c, Q6): what the gate does with its sealed store (internal/gate/appq).
-// The appq_* ops list, remove and (debuggable builds) import tenancies; the bring-up's plain DE
-// packages are moved out; each change is a lifecycle row in the ledger.
+// A store rule keeps a tenancy's package out of global's response to OGChat and seals it; the
+// appq_* ops list, remove and (debuggable builds) import tenancies; the bring-up's plain DE packages
+// are moved out; each change is a lifecycle row in the ledger.
 
 // leaveTimeout bounds the control/leave a removal fires (best effort).
 const leaveTimeout = 5 * time.Second
@@ -155,6 +158,167 @@ func (s *Server) recordAppq(event, caller string, uid uint32, i appq.Info, pathC
 	if event != ledger.AppqMigrated {
 		s.log.Info("app tenancy", "event", event, "name", i.Name, "app", i.AppID, "caller", caller)
 	}
+}
+
+// storeRule is the store rule for a request to global, if one matches.
+func (s *Server) storeRule(method string, dest *route.Destination) *StoreRule {
+	if dest.URL == nil || !s.isGlobal(dest) {
+		return nil
+	}
+	for i := range s.cfg.Store {
+		r := &s.cfg.Store[i]
+		if strings.EqualFold(r.Method, method) && matchPath(r.Path, dest.URL.Path) {
+			return r
+		}
+	}
+	return nil
+}
+
+// storeNotReady refuses, before it leaves, a request whose response a store rule would keep while
+// the store can't take a tenancy (CE storage locked, no og-gate-link): global would mint a
+// participant whose token nobody could hold.
+func (s *Server) storeNotReady(method string, dest *route.Destination) (status int, code, detail string, refuse bool) {
+	if s.storeRule(method, dest) == nil {
+		return 0, "", "", false
+	}
+	err := s.appq.Ready()
+	if err == nil {
+		return 0, "", "", false
+	}
+	status, code, _ = appqRefusal(err)
+	return status, code, "app tenancies can't be stored now: " + err.Error(), true
+}
+
+// appqResponse is what the gate does with an upstream response for app tenancies: a store rule keeps
+// a tenancy's package out of a 2xx from global, sealed, or refuses the response when it can't (the
+// package never passes).
+func (s *Server) appqResponse(ctx context.Context, class string, uid uint32, req *wire.Request, method string,
+	dest *route.Destination, row *ledger.Row, status int, data []byte,
+) ([]byte, *wire.Response) {
+	if dest.Tenancy != "" || status/100 != 2 {
+		return data, nil
+	}
+	rule := s.storeRule(method, dest)
+	if rule == nil {
+		return data, nil
+	}
+	out, i, err := s.keepTenancy(rule, req, data)
+	if err != nil {
+		st, code, ok := appqRefusal(err)
+		if !ok {
+			st, code = 503, "tenancy_not_stored"
+		}
+		row.Error = code
+		s.log.Warn("app tenancy not stored", "reason", code, "err", err)
+		r := wire.Refuse(req.ID, st, code, err.Error())
+		r.Ledger, r.Class, r.Masked.Mask = row.ID, row.Class, row.Mask
+		return nil, r
+	}
+	if i != nil {
+		s.recordAppq(ledger.AppqAdded, class, uid, *i, row.PathClass, status)
+	}
+	return out, nil
+}
+
+// keepTenancy seals the package at rule.Field under the name at rule.NameField and puts
+// {"stored": "<name>"} in its place. The object holding the name may say the thread and app name.
+// A response without the field (or with null there) passes unchanged.
+func (s *Server) keepTenancy(rule *StoreRule, req *wire.Request, data []byte) ([]byte, *appq.Info, error) {
+	raw, ok := jsonPath(data, rule.Field)
+	if !ok || string(bytes.TrimSpace(raw)) == "null" {
+		return data, nil, nil
+	}
+	var name string
+	if v, ok := jsonPath(data, rule.NameField); ok {
+		_ = json.Unmarshal(v, &name)
+	}
+	if !appq.ValidName(name) {
+		return nil, nil, fmt.Errorf("no tenancy name at %s", rule.NameField)
+	}
+	pkg, ok := packageObject(raw)
+	if !ok {
+		return nil, nil, fmt.Errorf("tenancy %s: %s is not a package", name, rule.Field)
+	}
+	var about struct {
+		AppName  string `json:"app_name"`
+		ThreadID string `json:"thread_id"`
+	}
+	parent := ""
+	if dot := strings.LastIndex(rule.NameField, "."); dot >= 0 {
+		parent = rule.NameField[:dot]
+	}
+	if v, ok := jsonPath(data, parent); ok {
+		_ = json.Unmarshal(v, &about)
+	}
+	i, err := s.appq.Add(name, pkg, appq.Info{AccountID: req.Source.AccountID, AppName: about.AppName, ThreadID: about.ThreadID}, appq.OriginStore)
+	if err != nil {
+		return nil, nil, fmt.Errorf("tenancy %s not stored: %w", name, err)
+	}
+	stored, _ := json.Marshal(map[string]string{"stored": name})
+	out, err := setJSONPath(data, rule.Field, stored)
+	if err != nil {
+		return nil, nil, fmt.Errorf("tenancy %s: %w", name, err)
+	}
+	return out, &i, nil
+}
+
+// matchPath matches a path against a rule's pattern: ":name" segments match any one segment.
+func matchPath(pattern, path string) bool {
+	ps := strings.Split(strings.Trim(pattern, "/"), "/")
+	xs := strings.Split(strings.Trim(path, "/"), "/")
+	if len(ps) != len(xs) {
+		return false
+	}
+	for i := range ps {
+		if strings.HasPrefix(ps[i], ":") {
+			if xs[i] == "" {
+				return false
+			}
+			continue
+		}
+		if ps[i] != xs[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// jsonPath is the value at a dotted path of object keys ("" is the whole document).
+func jsonPath(doc []byte, path string) (json.RawMessage, bool) {
+	cur := json.RawMessage(doc)
+	if path == "" {
+		return cur, true
+	}
+	for _, seg := range strings.Split(path, ".") {
+		var m map[string]json.RawMessage
+		if json.Unmarshal(cur, &m) != nil {
+			return nil, false
+		}
+		v, ok := m[seg]
+		if !ok {
+			return nil, false
+		}
+		cur = v
+	}
+	return cur, true
+}
+
+// setJSONPath replaces the value at a dotted path of object keys.
+func setJSONPath(doc []byte, path string, v json.RawMessage) ([]byte, error) {
+	seg, rest, nested := strings.Cut(path, ".")
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(doc, &m); err != nil {
+		return nil, err
+	}
+	if nested {
+		child, err := setJSONPath(m[seg], rest, v)
+		if err != nil {
+			return nil, err
+		}
+		v = child
+	}
+	m[seg] = v
+	return json.Marshal(m)
 }
 
 // MigrateAppq moves the bring-up's plain packages out of DE storage (<data>/appq/*.ogpkg, og-os

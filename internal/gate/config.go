@@ -72,6 +72,45 @@ func DefaultClasses() []ClassRule {
 	}
 }
 
+// StoreRule names a field of a global API response the gate keeps instead of handing it on (og-os
+// M12c): on a 2xx from an environment's global API to Method Path (":name" segments match any one
+// segment), the app tenancy package at Field (a dotted path of object keys) is sealed in the gate's
+// store under the name at NameField, and Field becomes {"stored": "<name>"}. The object holding the
+// name may say the tenancy's thread_id and app_name. Kind is "appq", the only kind.
+type StoreRule struct {
+	Path      string `json:"path"`
+	Method    string `json:"method"`
+	Field     string `json:"field"`
+	NameField string `json:"name_field"`
+	Kind      string `json:"kind"`
+}
+
+func (r *StoreRule) validate() error {
+	switch {
+	case r.Kind != "appq":
+		return fmt.Errorf("store: unknown kind %q", r.Kind)
+	case !strings.HasPrefix(r.Path, "/") || strings.ContainsAny(r.Path, "?#"):
+		return fmt.Errorf("store: bad path %q", r.Path)
+	case !methods[strings.ToUpper(r.Method)]:
+		return fmt.Errorf("store: bad method %q", r.Method)
+	case !dottedPath(r.Field) || !dottedPath(r.NameField) || r.Field == r.NameField:
+		return fmt.Errorf("store: field %q and name_field %q must be different dotted paths", r.Field, r.NameField)
+	}
+	return nil
+}
+
+func dottedPath(p string) bool {
+	if p == "" || strings.ContainsAny(p, "[]") {
+		return false
+	}
+	for _, seg := range strings.Split(p, ".") {
+		if seg == "" {
+			return false
+		}
+	}
+	return true
+}
+
 // Ledger and response values of a request's mask state.
 const (
 	// MaskOn: the request's content went through the masker.
@@ -86,6 +125,8 @@ const (
 type Config struct {
 	Environments []route.Environment `json:"environments"`
 	Learn        []route.LearnRule   `json:"learn"`
+	// Store names global API responses whose app tenancy package the gate keeps (og-os M12c).
+	Store []StoreRule `json:"store,omitempty"`
 	// Classes decide masking per destination class (DefaultClasses when empty).
 	Classes     []ClassRule  `json:"classes,omitempty"`
 	Callers     []CallerRule `json:"callers"`
@@ -129,6 +170,11 @@ func LoadConfig(path string) (Config, error) {
 func (c *Config) Validate() error {
 	if err := c.validateModels(); err != nil {
 		return err
+	}
+	for i := range c.Store {
+		if err := c.Store[i].validate(); err != nil {
+			return err
+		}
 	}
 	seen := map[string]bool{}
 	for _, r := range c.Classes {
