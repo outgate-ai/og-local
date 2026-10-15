@@ -49,6 +49,7 @@ type Server struct {
 	hubBase   *url.URL
 	hubClient *http.Client
 	peerOf    func(*net.UnixConn) (peer.Cred, error)
+	tunnelDir string
 }
 
 // Options are the parts tests and the command line replace.
@@ -71,6 +72,8 @@ type Options struct {
 	Appq *appq.Store
 	// PeerOf replaces peer.Of (tests: SELinux domains can't be faked on a host).
 	PeerOf func(*net.UnixConn) (peer.Cred, error)
+	// TunnelDir holds the tunnel front's settings.json and clients.json (credential-encrypted storage).
+	TunnelDir string
 }
 
 func New(cfg *Config, opts *Options) (*Server, error) {
@@ -130,6 +133,7 @@ func New(cfg *Config, opts *Options) (*Server, error) {
 
 		downloadIdle: opts.DownloadIdle,
 		peerOf:       opts.PeerOf,
+		tunnelDir:    opts.TunnelDir,
 	}
 	s.hubClient = &http.Client{Transport: tr, CheckRedirect: s.hubRedirect}
 	if s.packages.Path == "" {
