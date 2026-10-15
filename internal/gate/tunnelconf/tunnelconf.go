@@ -47,7 +47,8 @@ type Config struct {
 	// Access application's audience tag.
 	Team string
 	AUD  string
-	// RequireClientKey: a request also needs a client key (default true).
+	// RequireClientKey: a request also needs a client key (default true). Settings always writes true (the PO
+	// chose both checks); false is a test knob, honoured by the tunnel front on debuggable builds only.
 	RequireClientKey bool
 	// Model: the on-device model is served (default false).
 	Model bool

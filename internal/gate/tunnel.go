@@ -187,7 +187,8 @@ func (t *tunnelFront) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	row.Subject = t.subject(claims)
 	keyID, ok := clientKey(r.Header.Values("Authorization"), conf)
 	row.ClientKey = keyID
-	if !ok && conf.RequireClientKey {
+	// The PO chose both checks: Access-only (require_client_key false) is for tests and debuggable builds.
+	if !ok && (conf.RequireClientKey || !s.cfg.Debuggable) {
 		refuse(http.StatusForbidden, "client_key")
 		return
 	}

@@ -905,12 +905,19 @@ func TestTunnelClientKey(t *testing.T) {
 	if code, _, _ := e.do("GET", "/health", nil, map[string]string{"Authorization": "Bearer " + other}); code != 200 || e.lastIn().ClientKey != "k_phone" {
 		t.Errorf("new key: %d", code)
 	}
-	// Access only.
+	// require_client_key false is ignored on a user build: the key stays required.
 	e.writeSettings(map[string]any{"require_client_key": false})
+	if code, got, _ := e.do("GET", "/health", nil, map[string]string{"Authorization": ""}); !refusedWith(code, got, 403, "client_key") {
+		t.Errorf("user build, require_client_key false, no key: %d %s", code, got)
+	}
+}
+
+func TestTunnelAccessOnlyDebuggable(t *testing.T) {
+	e := newTunnelEnv(t, true, map[string]any{"require_client_key": false})
 	if code, _, _ := e.do("GET", "/health", nil, map[string]string{"Authorization": ""}); code != 200 || e.lastIn().ClientKey != "" {
 		t.Errorf("access only, no key: %d %+v", code, e.lastIn())
 	}
-	if code, _, _ := e.do("GET", "/health", nil, map[string]string{"Authorization": "Bearer " + other}); code != 200 || e.lastIn().ClientKey != "k_phone" {
+	if code, _, _ := e.do("GET", "/health", nil, map[string]string{"Authorization": "Bearer " + e.ckey}); code != 200 || e.lastIn().ClientKey != "k_laptop" {
 		t.Errorf("access only, key: %d", code)
 	}
 	if code, _, _ := e.do("GET", "/health", nil, map[string]string{"Cf-Access-Jwt-Assertion": ""}); code != 403 {
