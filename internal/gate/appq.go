@@ -213,13 +213,15 @@ func (s *Server) appqResponse(ctx context.Context, class string, uid uint32, req
 	}
 	out, i, err := s.keepTenancy(rule, req, data)
 	if err != nil {
-		st, code, ok := appqRefusal(err)
-		if !ok {
-			st, code = 503, "tenancy_not_stored"
+		// Global has minted by now: one code for every reason, so the caller knows to delete the tenancy (the
+		// same storage codes before the request leaves mean nothing was minted). The reason is in the detail.
+		reason := "tenancy_not_stored"
+		if _, code, ok := appqRefusal(err); ok {
+			reason = code
 		}
-		row.Error = code
-		s.log.Warn("app tenancy not stored", "reason", code, "err", err)
-		r := wire.Refuse(req.ID, st, code, err.Error())
+		row.Error = reason
+		s.log.Warn("app tenancy not stored", "reason", reason, "err", err)
+		r := wire.Refuse(req.ID, 503, "tenancy_not_stored", reason+": "+err.Error())
 		r.Ledger, r.Class, r.Masked.Mask = row.ID, row.Class, row.Mask
 		return nil, r
 	}

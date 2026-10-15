@@ -192,7 +192,7 @@ func TestAppqStoreRuleFailsClosed(t *testing.T) {
 	k.Down.Store(true)
 	h, st := startAppq(t, "chat", appq.New(filepath.Join(ce, "appq"), k), nil)
 	out := h.raw(line)
-	if !strings.Contains(out, `"refused":"keystore_unavailable"`) || !strings.Contains(out, `"status":503`) || strings.Contains(out, testToken("app_1")) {
+	if !strings.Contains(out, `"refused":"tenancy_not_stored"`) || !strings.Contains(out, `"detail":"keystore_unavailable`) || !strings.Contains(out, `"status":503`) || strings.Contains(out, testToken("app_1")) {
 		t.Errorf("keystore down: %s", out)
 	}
 	if row := h.rows.last(t); row.Error != "keystore_unavailable" || row.Status != 201 {
