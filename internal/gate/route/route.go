@@ -319,7 +319,9 @@ func encode(q url.Values) string {
 	return "?" + q.Encode()
 }
 
-var idSegment = regexp.MustCompile(`^(?:[0-9]+|[0-9a-fA-F-]{16,}|(?:thr|reg|ln|gt|upl|dec|gate|app|run|cmd|acct|o|u)[-_][A-Za-z0-9_-]+|[A-Za-z0-9_-]{24,})$`)
+// idSegment matches the ids in Outgate paths. App and device ids are "app_" and "dev_" + hex; a
+// hyphen after "app" is a word ("app-tenancies"), not an id.
+var idSegment = regexp.MustCompile(`^(?:[0-9]+|[0-9a-fA-F-]{16,}|(?:thr|reg|ln|gt|upl|dec|gate|run|cmd|acct|o|u)[-_][A-Za-z0-9_-]+|(?:app|dev)_[A-Za-z0-9_-]+|[A-Za-z0-9_-]{24,})$`)
 
 // PathClass replaces id-like segments with ":id" so ledger rows group by endpoint.
 func PathClass(path string) string {

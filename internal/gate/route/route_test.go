@@ -126,6 +126,16 @@ func TestPathClass(t *testing.T) {
 			t.Errorf("PathClass(%q) = %q, want %q", in, got, want)
 		}
 	}
+	// Device ids, and the learn and store rules' device routes.
+	for in, want := range map[string]string{
+		"/api/v1/agents/devices/dev_0123456789abcdef/channel-token":        "/api/v1/agents/devices/:id/channel-token",
+		"/api/v1/agents/devices/dev_0123456789abcdef/app-tenancies":        "/api/v1/agents/devices/:id/app-tenancies",
+		"/api/v1/agents/devices/dev_0123456789abcdef/app-tenancies/travel": "/api/v1/agents/devices/:id/app-tenancies/travel",
+	} {
+		if got := PathClass(in); got != want {
+			t.Errorf("PathClass(%q) = %q, want %q", in, got, want)
+		}
+	}
 	if got := ThreadID("/api/v1/agents/threads/thr-9/events"); got != "thr-9" {
 		t.Errorf("ThreadID = %q", got)
 	}
