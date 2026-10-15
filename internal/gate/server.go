@@ -211,6 +211,8 @@ func (s *Server) handle(ctx context.Context, c *net.UnixConn) {
 		resp = s.healthResponse(class)
 	case req.Op == "ledger" && class == "debug":
 		resp = jsonResponse(200, s.ring.Last(req.Limit))
+	case isAppqOp(req.Op):
+		resp = s.appqOp(ctx, class, cred, req)
 	default:
 		resp = wire.Refuse(req.ID, 400, "unknown_op", req.Op)
 	}

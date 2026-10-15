@@ -2,6 +2,7 @@ package gate
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -79,6 +80,12 @@ func startAppq(t *testing.T, class string, st *appq.Store, mutate func(*Config))
 	return h, st
 }
 
+func (h *harness) raw(line string) string {
+	h.t.Helper()
+	b, _ := json.Marshal(h.call(line))
+	return string(b)
+}
+
 func (r *rec) events(kind string) []ledger.Row {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -92,6 +99,109 @@ func (r *rec) events(kind string) []ledger.Row {
 }
 
 const popLine = `{"source":{"account_id":"acct-1","region_id":"appq:%s","adapter":"appq"},"method":"POST","path":"/commands/pop","body":{},"egress":{"kind":"poll"},"timeout_ms":10000}`
+
+func TestAppqOpsByCaller(t *testing.T) {
+	pkg := func(h *harness) string { return appPackage(h.up.srv.URL, "app_1") }
+	importLine := func(h *harness) string {
+		return fmt.Sprintf(`{"op":"appq_import","name":"travel","source":{"account_id":"acct-1"},"package":%s}`, pkg(h))
+	}
+	for _, class := range []string{"chat", "models", "voice", "local-agent"} {
+		h, _ := startAppq(t, class, nil, func(c *Config) { c.Debuggable = true })
+		for _, line := range []string{`{"op":"appq_list"}`, `{"op":"appq_remove","name":"travel"}`, importLine(h)} {
+			if resp := h.call(line); resp["refused"] != "caller_not_allowed" {
+				t.Errorf("%s %s: %v", class, line[:22], resp)
+			}
+		}
+	}
+	// The agent lists and removes, but doesn't import.
+	agent, _ := startAppq(t, "agent", nil, func(c *Config) { c.Debuggable = true })
+	if resp := agent.call(importLine(agent)); resp["refused"] != "caller_not_allowed" {
+		t.Errorf("agent import: %v", resp)
+	}
+	if resp := agent.call(`{"op":"appq_list"}`); resp["status"].(float64) != 200 {
+		t.Errorf("agent list: %v", resp)
+	}
+	// Debug tools: nothing on a user build; import and list on a debuggable one, never remove.
+	user, _ := startAppq(t, "debug", nil, nil)
+	for _, line := range []string{`{"op":"appq_list"}`, importLine(user)} {
+		if resp := user.call(line); resp["refused"] != "caller_not_allowed" {
+			t.Errorf("debug on a user build: %v", resp)
+		}
+	}
+	if resp := user.call(fmt.Sprintf(popLine, "travel")); resp["refused"] != "destination_not_allowed" {
+		t.Errorf("debug reached a tenancy on a user build: %v", resp)
+	}
+	dbg, st := startAppq(t, "debug", nil, func(c *Config) { c.Debuggable = true })
+	out := dbg.raw(importLine(dbg))
+	if !strings.Contains(out, `"status":200`) || !strings.Contains(out, `"name":"travel"`) || strings.Contains(out, testToken("app_1")) {
+		t.Fatalf("import: %s", out)
+	}
+	if added := dbg.rows.events(ledger.AppqAdded); len(added) != 1 || added[0].Caller != "debug" || added[0].AccountID != "acct-1" {
+		t.Errorf("import rows = %+v", added)
+	}
+	if got, err := st.Get("travel"); err != nil || got.Token != testToken("app_1") {
+		t.Errorf("imported: %+v %v", got, err)
+	}
+	// A package given as a string (adb tools) works too; a missing one doesn't.
+	asString, _ := json.Marshal(pkg(dbg))
+	if resp := dbg.call(fmt.Sprintf(`{"op":"appq_import","name":"other","package":%s}`, asString)); resp["status"].(float64) != 200 {
+		t.Errorf("string package: %v", resp)
+	}
+	for _, line := range []string{`{"op":"appq_import","name":"x"}`, `{"op":"appq_import","name":"a/b","package":` + pkg(dbg) + `}`, `{"op":"appq_import","name":"x","package":{"app":{}}}`} {
+		if resp := dbg.call(line); resp["refused"] != "bad_request" {
+			t.Errorf("%s: %v", line, resp)
+		}
+	}
+	if resp := dbg.call(`{"op":"appq_list"}`); resp["status"].(float64) != 200 || len(resp["body"].([]any)) != 2 {
+		t.Errorf("debug list: %v", resp)
+	}
+	if resp := dbg.call(`{"op":"appq_remove","name":"travel"}`); resp["refused"] != "caller_not_allowed" {
+		t.Errorf("debug remove: %v", resp)
+	}
+}
+
+func TestAppqRemove(t *testing.T) {
+	agent, st := startAppq(t, "agent", nil, nil)
+	if _, err := st.Add("travel", []byte(appPackage(agent.up.srv.URL, "app_1")), appq.Info{AccountID: "acct-1"}, appq.OriginStore); err != nil {
+		t.Fatal(err)
+	}
+	resp := agent.call(`{"op":"appq_remove","name":"travel"}`)
+	if body, _ := resp["body"].(map[string]any); resp["status"].(float64) != 200 || body["removed"] != true || body["left"] != true {
+		t.Fatalf("remove = %v", resp)
+	}
+	leave := agent.up.last()
+	if leave.Method != "POST" || leave.Path != "/api/v1/hooks/apps/app_1" || leave.Query != "hook=control" ||
+		leave.Body != `{"action":"leave"}` || leave.Header.Get("X-Outgate-Hook-Token") != testToken("app_1") {
+		t.Errorf("leave = %+v", leave)
+	}
+	if removed := agent.rows.events(ledger.AppqRemoved); len(removed) != 1 || removed[0].Caller != "agent" || removed[0].AppID != "app_1" {
+		t.Errorf("removed rows = %+v", removed)
+	}
+	if control := agent.rows.events("control"); len(control) != 1 || control[0].RegionID != "appq:travel" || control[0].Status != 200 {
+		t.Errorf("leave row = %+v", control)
+	}
+	if resp := agent.call(fmt.Sprintf(popLine, "travel")); resp["refused"] != "unknown_region" {
+		t.Errorf("removed tenancy still used: %v", resp)
+	}
+	if resp := agent.call(`{"op":"appq_remove","name":"travel"}`); resp["refused"] != "unknown_region" {
+		t.Errorf("remove twice: %v", resp)
+	}
+
+	// Its token already revoked: the leave fails, the tenancy is removed by the user all the same.
+	if _, err := st.Add("gone", []byte(appPackage(agent.up.srv.URL, "app_gone")), appq.Info{}, appq.OriginStore); err != nil {
+		t.Fatal(err)
+	}
+	resp = agent.call(`{"op":"appq_remove","name":"gone"}`)
+	if body, _ := resp["body"].(map[string]any); body["removed"] != true || body["left"] != false {
+		t.Errorf("remove a revoked tenancy = %v", resp)
+	}
+	if n := len(agent.rows.events(ledger.AppqRevoked)); n != 0 {
+		t.Errorf("a removal's leave recorded a revocation (%d)", n)
+	}
+	if list, _ := st.List(); len(list) != 0 {
+		t.Errorf("left: %v", list)
+	}
+}
 
 func TestAppqTokenFromTheSealedStore(t *testing.T) {
 	agent, st := startAppq(t, "agent", nil, nil)
@@ -126,6 +236,9 @@ func TestAppqRefusedUntilReady(t *testing.T) {
 	if resp := locked.call(fmt.Sprintf(popLine, "travel")); resp["refused"] != "storage_locked" || resp["status"].(float64) != 503 {
 		t.Errorf("locked: %v", resp)
 	}
+	if resp := locked.call(`{"op":"appq_list"}`); resp["refused"] != "storage_locked" {
+		t.Errorf("list while locked: %v", resp)
+	}
 	if h := locked.call(`{"op":"health"}`); h["body"].(map[string]any)["appq"].(map[string]any)["ready"] != false {
 		t.Errorf("health while locked: %v", h["body"].(map[string]any)["appq"])
 	}
@@ -144,6 +257,9 @@ func TestAppqRefusedUntilReady(t *testing.T) {
 	down, _ := startAppq(t, "agent", appq.New(filepath.Join(ce, "appq"), nil), nil)
 	if resp := down.call(fmt.Sprintf(popLine, "travel")); resp["refused"] != "link_unavailable" || len(down.up.got) != 0 {
 		t.Errorf("link down: %v", resp)
+	}
+	if resp := down.call(`{"op":"appq_list"}`); resp["status"].(float64) != 200 {
+		t.Errorf("list with the link down: %v", resp)
 	}
 	k.Down.Store(true)
 	ks, _ := startAppq(t, "agent", appq.New(filepath.Join(ce, "appq"), k), nil)

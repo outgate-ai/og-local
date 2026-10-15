@@ -37,7 +37,8 @@ type Request struct {
 	V  int    `json:"v,omitempty"`
 	ID string `json:"id,omitempty"`
 	// Op is empty for an upstream request; "download" fetches a model file from the
-	// mirror or Hugging Face into a passed descriptor; "health" and "ledger" are local.
+	// mirror or Hugging Face into a passed descriptor; "health", "ledger" and the app
+	// tenancy ops ("appq_list", "appq_remove", "appq_import") are local.
 	Op     string `json:"op,omitempty"`
 	Source Source `json:"source"`
 	Method string `json:"method,omitempty"`
@@ -71,6 +72,10 @@ type Request struct {
 	Revision string `json:"revision,omitempty"`
 	// Limit is for op "ledger".
 	Limit int `json:"limit,omitempty"`
+	// Name and Package are for the appq_* ops: an app tenancy's name, and its .ogpkg package
+	// (appq_import only; a JSON object, or a string holding one).
+	Name    string          `json:"name,omitempty"`
+	Package json.RawMessage `json:"package,omitempty"`
 }
 
 type Masked struct {
