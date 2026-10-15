@@ -3,56 +3,21 @@ package mask
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/outgate-ai/og-local/internal/gate"
+	"github.com/outgate-ai/og-local/internal/gate/sealtest"
 	"github.com/outgate-ai/og-local/internal/pii"
 )
 
-// testSealer stands in for og-gate-link's keystore2 key: AES-256-GCM under a key the test holds.
-type testSealer struct {
-	key  []byte
-	down atomic.Bool
-}
-
-func newTestSealer(t *testing.T) *testSealer {
-	t.Helper()
-	k := make([]byte, 32)
-	if _, err := rand.Read(k); err != nil {
-		t.Fatal(err)
-	}
-	return &testSealer{key: k}
-}
-
-func (f *testSealer) Seal(_ context.Context, plain, aad []byte) ([]byte, error) {
-	if f.down.Load() {
-		return nil, errors.New("keystore down")
-	}
-	g, _ := gcm(f.key)
-	nonce := make([]byte, g.NonceSize())
-	_, _ = rand.Read(nonce)
-	return g.Seal(nonce, nonce, plain, aad), nil
-}
-
-func (f *testSealer) Open(_ context.Context, sealed, aad []byte) ([]byte, error) {
-	if f.down.Load() {
-		return nil, errors.New("keystore down")
-	}
-	g, _ := gcm(f.key)
-	if len(sealed) < g.NonceSize() {
-		return nil, errors.New("short")
-	}
-	return g.Open(nil, sealed[:g.NonceSize()], sealed[g.NonceSize():], aad)
-}
+func newTestSealer(t *testing.T) *sealtest.Sealer { return sealtest.New(t) }
 
 func sealedStore(t *testing.T, dir string, retention time.Duration, maxItems int) *Store {
 	t.Helper()
@@ -220,7 +185,7 @@ func TestStoreFailsClosedWithoutTheKeystore(t *testing.T) {
 	}
 	before, _ := os.ReadFile(filepath.Join(dir2, mapFile))
 	keysBefore, _ := os.ReadFile(filepath.Join(dir2, keysFile))
-	k.down.Store(true)
+	k.Down.Store(true)
 	b := NewStore(dir2, 30*24*time.Hour, 100)
 	b.Sealer, b.now = k, func() time.Time { return now.Add(24 * time.Hour) }
 	if err := b.Ready(); !errors.Is(err, ErrKeystore) {
@@ -234,14 +199,14 @@ func TestStoreFailsClosedWithoutTheKeystore(t *testing.T) {
 	if !bytes.Equal(before, after) || !bytes.Equal(keysBefore, keysAfter) {
 		t.Error("map or keys rewritten while the keystore was down")
 	}
-	k.down.Store(false)
+	k.Down.Store(false)
 	if v, _, ok := b.Lookup(phs[0]); !ok || v != testName {
 		t.Errorf("after the keystore came back: %q %v", v, ok)
 	}
 
 	// The masker refuses provider content while the map is closed (fail closed).
 	m, _, _ := newTestMasker(t, map[string]pii.Class{testName: pii.ClassPerson})
-	m.Store.Sealer.(*testSealer).down.Store(true)
+	m.Store.Sealer.(*sealtest.Sealer).Down.Store(true)
 	in := `{"text":"hello ` + testName + `"}`
 	if _, _, err := m.Mask(context.Background(), call(in), []byte(in)); !errors.Is(err, gate.ErrStorageLocked) {
 		t.Errorf("mask with the keystore down: %v", err)
