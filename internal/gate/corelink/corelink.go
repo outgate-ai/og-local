@@ -136,6 +136,8 @@ type Link struct {
 	Args []string
 	Log  *slog.Logger
 	H    Handlers
+	// Debug (debuggable builds): log any descriptor that would have leaked into the helper.
+	Debug bool
 
 	mu      sync.Mutex
 	stdin   io.WriteCloser
@@ -158,6 +160,10 @@ const maxPending = 1000
 
 // ErrUnavailable: OG Core isn't attached (or the helper is down).
 var ErrUnavailable = errors.New("core_unavailable")
+
+// ErrLinkUnavailable: the helper itself isn't running, for the requests that don't need OG Core
+// (the keystore ops).
+var ErrLinkUnavailable = errors.New("link_unavailable")
 
 // Start runs the helper until ctx ends, restarting it when it exits.
 func (l *Link) Start(ctx context.Context) {
@@ -199,6 +205,12 @@ func (l *Link) run(ctx context.Context) error {
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
+	}
+	// Only stdin, stdout and stderr reach the helper (no ExtraFiles): descriptors the gate inherited
+	// without close-on-exec (init's sockets) would otherwise follow it into its binder domain, where
+	// SELinux refuses them (og-os M12).
+	if leaked := closeOnExecAll(); l.Debug && len(leaked) > 0 {
+		l.Log.Info("og-gate-link: marked close-on-exec", "fds", leaked)
 	}
 	if err := cmd.Start(); err != nil {
 		return err
@@ -361,10 +373,14 @@ func (l *Link) request(ctx context.Context, msg map[string]any, needCore bool) (
 	id := fmt.Sprintf("q%d", l.seq.Add(1))
 	msg["id"] = id
 	ch := make(chan json.RawMessage, 1)
+	unavailable := ErrUnavailable
+	if !needCore {
+		unavailable = ErrLinkUnavailable
+	}
 	l.mu.Lock()
 	if l.waiters == nil || (needCore && !l.up.Load()) || (!needCore && l.stdin == nil) {
 		l.mu.Unlock()
-		return nil, ErrUnavailable
+		return nil, unavailable
 	}
 	l.waiters[id] = ch
 	l.mu.Unlock()
@@ -372,12 +388,12 @@ func (l *Link) request(ctx context.Context, msg map[string]any, needCore bool) (
 		l.mu.Lock()
 		delete(l.waiters, id)
 		l.mu.Unlock()
-		return nil, ErrUnavailable
+		return nil, unavailable
 	}
 	select {
 	case r, ok := <-ch:
 		if !ok {
-			return nil, ErrUnavailable
+			return nil, unavailable
 		}
 		return r, nil
 	case <-ctx.Done():

@@ -90,7 +90,7 @@ func runServe(args []string) int {
 	var srv *gate.Server
 	if *linkPath != "" {
 		if _, err := os.Stat(*linkPath); err == nil {
-			link = &corelink.Link{Path: *linkPath, Log: log, H: corelink.Handlers{
+			link = &corelink.Link{Path: *linkPath, Log: log, Debug: cfg.Debuggable, H: corelink.Handlers{
 				Policy: func(rules []corelink.Rule) {
 					if m != nil {
 						m.SetPolicy(policyFrom(rules))
@@ -198,9 +198,11 @@ func newMasker(ceDir, model string, log *slog.Logger) *mask.Masker {
 
 // openMap opens the masking map as soon as CE storage and og-gate-link allow, so a Phase-1 plain
 // map is sealed (moved into keystore-wrapped storage, og-os M12) without waiting for the first
-// masked request. It retries until it succeeds.
+// masked request. It retries until it succeeds: after 1 s first (the helper starts with the gate),
+// backing off to 10 s.
 func openMap(ctx context.Context, st *mask.Store, log *slog.Logger) {
 	last := ""
+	delay := time.Second
 	for {
 		err := st.Ready()
 		if err == nil {
@@ -214,8 +216,9 @@ func openMap(ctx context.Context, st *mask.Store, log *slog.Logger) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(10 * time.Second):
+		case <-time.After(delay):
 		}
+		delay = min(delay*2, 10*time.Second)
 	}
 }
 
