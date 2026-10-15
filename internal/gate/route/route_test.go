@@ -2,8 +2,8 @@ package route
 
 import (
 	"errors"
+	"fmt"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -20,8 +20,19 @@ func testRouter(t *testing.T) *Router {
 		},
 		ModelSocket: "/model.sock",
 		Regions:     NewRegions(filepath.Join(dir, "regions.json"), 30*24*time.Hour),
-		Tenancies:   NewTenancies(filepath.Join(dir, "appq")),
+		Tenancies:   tenancies{},
 	}
+}
+
+// tenancies stands in for the gate's sealed store (internal/gate/appq).
+type tenancies map[string]Tenancy
+
+func (m tenancies) Get(name string) (Tenancy, error) {
+	t, ok := m[name]
+	if !ok {
+		return Tenancy{}, fmt.Errorf("%w: appq:%s", ErrUnknownRegion, name)
+	}
+	return t, nil
 }
 
 func TestResolveGlobalAndAbsolute(t *testing.T) {
@@ -92,17 +103,17 @@ func TestOnDeviceAndTenancy(t *testing.T) {
 	if err != nil || d.Kind != OnDevice || d.Socket != "/model.sock" || d.Path != "/v1/chat/completions" {
 		t.Fatalf("on-device: %+v %v", d, err)
 	}
-	dir := r.Tenancies.dir
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
+	pkg := `{"app":{"appId":"app_1","endpoints":{"hook":"https://api.example.test/api/v1/hooks/apps/app_1","commands":"https://api.example.test/api/v1/hooks/apps/app_1/commands"}},
+	 "client":{"auth":{"header":"X-Outgate-Hook-Token"}},"join":{"participant":"phone","token":"tok-synthetic"},"issuer":{"appName":"Travel"}}`
+	tn, err := ParsePackage([]byte(pkg))
+	if err != nil || tn.AppID != "app_1" || tn.AppName != "Travel" || tn.Participant != "phone" {
+		t.Fatalf("package: %+v %v", tn, err)
 	}
-	pkg := `{"app":{"endpoints":{"hook":"https://api.example.test/api/v1/hooks/apps/app_1","commands":"https://api.example.test/api/v1/hooks/apps/app_1/commands"}},
-	 "client":{"auth":{"header":"X-Outgate-Hook-Token"}},"join":{"participant":"phone","token":"tok-synthetic"}}`
-	if err := os.WriteFile(filepath.Join(dir, "travel.ogpkg"), []byte(pkg), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	tn.Gen = "g1"
+	r.Tenancies = tenancies{"travel": tn}
 	d, err = r.Resolve("appq:travel", "", "/commands/pop", nil)
-	if err != nil || d.URL.String() != "https://api.example.test/api/v1/hooks/apps/app_1/commands/pop" || d.Headers["X-Outgate-Hook-Token"] != "tok-synthetic" {
+	if err != nil || d.URL.String() != "https://api.example.test/api/v1/hooks/apps/app_1/commands/pop" || d.Headers["X-Outgate-Hook-Token"] != "tok-synthetic" ||
+		d.Tenancy != "travel" || d.TenancyGen != "g1" {
 		t.Fatalf("tenancy commands: %+v %v", d, err)
 	}
 	d, err = r.Resolve("appq:travel", "", "?hook=events", nil)
@@ -111,6 +122,11 @@ func TestOnDeviceAndTenancy(t *testing.T) {
 	}
 	if _, err := r.Resolve("appq:nope", "", "/commands/pop", nil); !errors.Is(err, ErrUnknownRegion) {
 		t.Errorf("unknown tenancy: %v", err)
+	}
+	for _, bad := range []string{`{}`, `{"app":{"endpoints":{"hook":"https://h.test/x"}},"join":{}}`, `{"app":{"endpoints":{"hook":"nohost"}},"join":{"token":"t"}}`} {
+		if _, err := ParsePackage([]byte(bad)); !errors.Is(err, ErrBadPackage) {
+			t.Errorf("%s: %v", bad, err)
+		}
 	}
 }
 

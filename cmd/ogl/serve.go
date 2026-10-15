@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/outgate-ai/og-local/internal/detector"
 	"github.com/outgate-ai/og-local/internal/gate"
 	"github.com/outgate-ai/og-local/internal/gate/alog"
+	"github.com/outgate-ai/og-local/internal/gate/appq"
 	"github.com/outgate-ai/og-local/internal/gate/corelink"
 	"github.com/outgate-ai/og-local/internal/gate/mask"
 	"github.com/outgate-ai/og-local/internal/gate/route"
@@ -48,7 +50,7 @@ func runServe(args []string) int {
 	modelSocket := fs.String("model-socket", "og_gate_model", "init socket name for the on-device model front")
 	modelListen := fs.String("model-listen", "", "bind this socket path for the on-device model front")
 	mode := fs.String("mode", "", "passthrough or mask")
-	ceDir := fs.String("ce-dir", "/data/misc_ce/0/outgate-gate", "credential-encrypted dir for the placeholder map")
+	ceDir := fs.String("ce-dir", "/data/misc_ce/0/outgate-gate", "credential-encrypted dir for the placeholder map and app tenancies")
 	model := fs.String("model", "openai/privacy-filter-q4", "detector model (og-local catalog name)")
 	linkPath := fs.String("link", "/system_ext/bin/og-gate-link", "OG Core binder helper (\"\" for none)")
 	if err := fs.Parse(args); err != nil {
@@ -114,6 +116,12 @@ func runServe(args []string) int {
 			log.Warn("no OG Core link", "path", *linkPath, "err", err)
 		}
 	}
+	// App tenancies' packages are sealed in CE storage, their keys by og-gate-link's keystore key too.
+	var sealer appq.Sealer
+	if link != nil {
+		sealer = link
+	}
+	opts.Appq = appq.New(filepath.Join(*ceDir, "appq"), sealer)
 	opts.Health = func() map[string]any {
 		h := map[string]any{"core": map[string]any{"attached": link != nil && link.Up()}}
 		if m != nil {
@@ -133,6 +141,7 @@ func runServe(args []string) int {
 	if m != nil {
 		go openMap(ctx, m.Store, log)
 	}
+	go srv.MigrateAppq(ctx)
 	ln, err := openListener(*listen, *socket)
 	if err != nil {
 		log.Error("socket", "err", err)

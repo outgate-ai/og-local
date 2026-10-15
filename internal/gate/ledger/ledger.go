@@ -56,6 +56,9 @@ type Row struct {
 	OnDevice    bool   `json:"on_device"`
 	Mode        string `json:"mode"`
 	Error       string `json:"error,omitempty"`
+	// AppID and Participant name an app tenancy's app and participant (lifecycle rows, appq.go).
+	AppID       string `json:"app_id,omitempty"`
+	Participant string `json:"participant,omitempty"`
 }
 
 // Sink receives every row once it is complete.
@@ -206,6 +209,9 @@ func (r *Ring) Record(row *Row) {
 	r.next = (r.next + 1) % len(r.rows)
 	if r.next == 0 {
 		r.full = true
+	}
+	if Lifecycle(row) {
+		return
 	}
 	day := r.now().Format("2006-01-02")
 	if day != r.day {

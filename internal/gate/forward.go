@@ -94,8 +94,9 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 		return refuse(400, "bad_method", method)
 	}
 
-	// App tenancies carry a join token only the gate holds: og-agentd's bring-up only.
-	if strings.HasPrefix(req.Source.RegionID, "appq:") && class != "agent" && class != "debug" {
+	// App tenancies carry a join token only the gate holds: og-agentd's transport (and debug tools
+	// on debuggable builds) only.
+	if strings.HasPrefix(req.Source.RegionID, "appq:") && class != "agent" && (class != "debug" || !s.cfg.Debuggable) {
 		return refuse(403, "destination_not_allowed", "app tenancies are for the agent runtime")
 	}
 	query, err := queryValues(req.Query)
@@ -115,6 +116,8 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 			reason, status = "unknown_region", 404
 		} else if errors.Is(err, route.ErrBadURL) {
 			reason, status = "bad_url", 400
+		} else if st, code, ok := appqRefusal(err); ok {
+			reason, status = code, st
 		}
 		return refuse(status, reason, err.Error())
 	}

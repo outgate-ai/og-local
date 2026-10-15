@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/outgate-ai/og-local/internal/gate/appq"
 	"github.com/outgate-ai/og-local/internal/gate/corelink"
 	"github.com/outgate-ai/og-local/internal/gate/ledger"
 	"github.com/outgate-ai/og-local/internal/gate/peer"
@@ -32,6 +33,7 @@ type Server struct {
 	masker  Masker
 	ledger  ledger.Sink
 	ring    *ledger.Ring
+	appq    *appq.Store
 	started time.Time
 	seq     atomic.Uint64
 	wg      sync.WaitGroup
@@ -64,6 +66,8 @@ type Options struct {
 	DownloadIdle time.Duration
 	// HubBase replaces route.HubOrigin (tests).
 	HubBase string
+	// Appq is the sealed app tenancy store (<ce>/appq); nil: none, appq: requests are refused.
+	Appq *appq.Store
 }
 
 func New(cfg *Config, opts *Options) (*Server, error) {
@@ -99,19 +103,18 @@ func New(cfg *Config, opts *Options) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("hub base: %w", err)
 	}
-	// App-queue tenancies are a bring-up path and their packages are live join tokens: debuggable
-	// builds only (og-os M12).
-	appqDir := ""
-	if cfg.Debuggable {
-		appqDir = cfg.DataDir + "/appq"
+	// App tenancies are a product transport (og-os M12c): their packages are sealed in CE storage.
+	tenancies := opts.Appq
+	if tenancies == nil {
+		tenancies = appq.New("", nil)
 	}
 	s := &Server{
-		cfg: cfg, log: log, masker: masker, ledger: sinks, ring: ring, started: time.Now(),
+		cfg: cfg, log: log, masker: masker, ledger: sinks, ring: ring, started: time.Now(), appq: tenancies,
 		router: &route.Router{
 			Envs: cfg.Environments, Debuggable: cfg.Debuggable, ModelSocket: cfg.Models()[DefaultModel],
 			AllowHTTP: cfg.AllowHTTP,
 			Regions:   route.NewRegions(cfg.DataDir+"/state/regions.json", cfg.regionTTL()),
-			Tenancies: route.NewTenancies(appqDir),
+			Tenancies: tenancies,
 			Providers: cfg.Providers(),
 		},
 		client:   &http.Client{Transport: tr, CheckRedirect: noRedirects},
@@ -279,6 +282,7 @@ func (s *Server) healthResponse(class string) *wire.Response {
 		},
 		"today":  s.ring.Totals(),
 		"mirror": s.mirrorHealth(),
+		"appq":   s.appqHealth(),
 	}
 	s.mu.Lock()
 	for k, v := range s.health {
@@ -298,7 +302,7 @@ func (s *Server) healthResponse(class string) *wire.Response {
 	}
 	if class == "debug" {
 		h["regions"] = s.router.Regions.All()
-		h["tenancies"] = s.router.Tenancies.Names()
+		h["tenancies"] = s.appq.Names()
 	}
 	return jsonResponse(200, h)
 }

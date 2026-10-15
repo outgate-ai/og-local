@@ -2,98 +2,43 @@ package route
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
+	"errors"
+	"net/url"
 	"strings"
-	"sync"
-	"time"
 )
 
-// Tenancy is an app command-queue tenancy (.ogpkg) og-agentd's appq bring-up uses.
-// The gate alone holds its join token; og-agentd only knows the tenancy name.
+// Tenancy is an app command-queue tenancy (a participant of an Outgate app, from its .ogpkg package):
+// where its app's endpoints are and the join token the gate adds to its requests. The gate alone
+// holds the token; og-agentd and OGChat only know the tenancy's name.
 type Tenancy struct {
 	Name        string
 	Participant string
+	AppID       string
+	AppName     string
 	Hook        string
 	Commands    string
 	AuthHeader  string
 	Token       string
+	// Gen tells one tenancy from a later one of the same name (the store's, internal/gate/appq).
+	Gen string
 }
 
-// Tenancies loads <dir>/<name>.ogpkg files, re-reading them when the directory changes.
-type Tenancies struct {
-	dir string
-
-	mu      sync.Mutex
-	byName  map[string]Tenancy
-	checked time.Time
-	stamp   string
+// TenancySource opens app tenancies by name: the gate's sealed store (internal/gate/appq). An
+// unknown name is ErrUnknownRegion; any other error (storage locked, keystore unavailable) is the
+// store's and passes through Resolve as it is.
+type TenancySource interface {
+	Get(name string) (Tenancy, error)
 }
 
-func NewTenancies(dir string) *Tenancies {
-	return &Tenancies{dir: dir, byName: map[string]Tenancy{}}
-}
+// ErrBadPackage: not an .ogpkg package with a hook endpoint and a join token.
+var ErrBadPackage = errors.New("bad package")
 
-func (t *Tenancies) Get(name string) (Tenancy, bool) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.refresh()
-	x, ok := t.byName[name]
-	return x, ok
-}
-
-func (t *Tenancies) Names() []string {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.refresh()
-	out := make([]string, 0, len(t.byName))
-	for n := range t.byName {
-		out = append(out, n)
-	}
-	return out
-}
-
-func (t *Tenancies) refresh() {
-	if t.dir == "" || time.Since(t.checked) < 2*time.Second {
-		return
-	}
-	t.checked = time.Now()
-	entries, err := os.ReadDir(t.dir)
-	if err != nil {
-		t.byName, t.stamp = map[string]Tenancy{}, ""
-		return
-	}
-	var stamp strings.Builder
-	for _, e := range entries {
-		if info, err := e.Info(); err == nil {
-			stamp.WriteString(e.Name() + info.ModTime().String() + ";")
-		}
-	}
-	if stamp.String() == t.stamp {
-		return
-	}
-	t.stamp = stamp.String()
-	byName := map[string]Tenancy{}
-	for _, e := range entries {
-		name, ok := strings.CutSuffix(e.Name(), ".ogpkg")
-		if !ok || name == "" {
-			continue
-		}
-		if x, ok := parsePackage(filepath.Join(t.dir, e.Name())); ok {
-			x.Name = name
-			byName[name] = x
-		}
-	}
-	t.byName = byName
-}
-
-func parsePackage(path string) (Tenancy, bool) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return Tenancy{}, false
-	}
+// ParsePackage reads the parts of an .ogpkg package (ogpkg/1) the gate uses.
+func ParsePackage(b []byte) (Tenancy, error) {
 	var p struct {
 		App struct {
+			AppID     string `json:"appId"`
+			Name      string `json:"name"`
 			Endpoints struct {
 				Hook     string `json:"hook"`
 				Commands string `json:"commands"`
@@ -108,9 +53,18 @@ func parsePackage(path string) (Tenancy, bool) {
 			Participant string `json:"participant"`
 			Token       string `json:"token"`
 		} `json:"join"`
+		Issuer struct {
+			AppName string `json:"appName"`
+		} `json:"issuer"`
 	}
 	if json.Unmarshal(b, &p) != nil || p.App.Endpoints.Hook == "" || p.Join.Token == "" {
-		return Tenancy{}, false
+		return Tenancy{}, ErrBadPackage
+	}
+	if u, err := url.Parse(p.App.Endpoints.Hook); err != nil || u.Host == "" {
+		return Tenancy{}, ErrBadPackage
+	}
+	if strings.ContainsAny(p.Join.Token, "\r\n") {
+		return Tenancy{}, ErrBadPackage
 	}
 	header := p.Client.Auth.Header
 	if header == "" {
@@ -120,8 +74,12 @@ func parsePackage(path string) (Tenancy, bool) {
 	if commands == "" {
 		commands = strings.TrimRight(p.App.Endpoints.Hook, "/") + "/commands"
 	}
+	name := p.App.Name
+	if name == "" {
+		name = p.Issuer.AppName
+	}
 	return Tenancy{
-		Participant: p.Join.Participant, Hook: p.App.Endpoints.Hook, Commands: commands,
-		AuthHeader: header, Token: p.Join.Token,
-	}, true
+		Participant: p.Join.Participant, AppID: p.App.AppID, AppName: name,
+		Hook: p.App.Endpoints.Hook, Commands: commands, AuthHeader: header, Token: p.Join.Token,
+	}, nil
 }

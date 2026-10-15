@@ -31,6 +31,8 @@ type upstream struct {
 	got  []seen
 	srv  *httptest.Server
 	host string
+	// custom answers a request first, when it returns true.
+	custom func(http.ResponseWriter, *http.Request) bool
 }
 
 type seen struct {
@@ -44,7 +46,11 @@ func newUpstream(t *testing.T) *upstream {
 		b, _ := io.ReadAll(r.Body)
 		u.mu.Lock()
 		u.got = append(u.got, seen{r.Method, r.URL.Path, r.URL.RawQuery, string(b), r.Header.Get("Content-Type"), r.Header.Clone()})
+		custom := u.custom
 		u.mu.Unlock()
+		if custom != nil && custom(w, r) {
+			return
+		}
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/events-token"):
 			_, _ = fmt.Fprintf(w, `{"url":"http://%s/v1/agents/threads/thr-1/events","token":"<redacted>"}`, "region.localhost:"+portOf(u.srv.URL))
@@ -645,59 +651,6 @@ func TestRegionHostsLearnedFromGlobal(t *testing.T) {
 	}
 	if row := h.rows.last(t); row.Destination != "region.localhost" || row.Content {
 		t.Errorf("row = %+v", row)
-	}
-}
-
-func TestAppqTenancyTokenInjected(t *testing.T) {
-	debuggable := func(c *Config) { c.Debuggable = true }
-	h := start(t, Passthrough, debuggable)
-	if err := os.MkdirAll(filepath.Join(h.dir, "appq"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	pkg := fmt.Sprintf(`{"app":{"endpoints":{"hook":"%[1]s/api/v1/hooks/apps/app_1","commands":"%[1]s/api/v1/hooks/apps/app_1/commands"}},"client":{"auth":{"header":"X-Outgate-Hook-Token"}},"join":{"participant":"phone","token":"tok-synthetic"}}`, h.up.srv.URL)
-	if err := os.WriteFile(filepath.Join(h.dir, "appq", "travel.ogpkg"), []byte(pkg), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	resp := h.call(`{"source":{"account_id":"phone","region_id":"appq:travel","adapter":"appq"},"method":"POST","path":"/commands/pop","body":{},"egress":{"kind":"poll"},"timeout_ms":10000}`)
-	if resp["status"].(float64) != 200 {
-		t.Fatalf("resp = %v", resp)
-	}
-	got := h.up.last()
-	if got.Path != "/api/v1/hooks/apps/app_1/commands/pop" || got.Header.Get("X-Outgate-Hook-Token") != "tok-synthetic" {
-		t.Errorf("upstream got %+v", got)
-	}
-	resp = h.call(`{"source":{"account_id":"phone","region_id":"appq:travel","adapter":"appq"},"method":"POST","path":"/?hook=events","body":{"kind":"gate.open"},"egress":{"kind":"gate"}}`)
-	if resp["status"].(float64) != 200 || h.up.last().Query != "hook=events" {
-		t.Errorf("hook fire: %v %+v", resp, h.up.last())
-	}
-
-	uid := uint32(os.Getuid()) //nolint:gosec // uids fit uint32
-	chat := start(t, Passthrough, func(c *Config) { debuggable(c); c.Callers = []CallerRule{{UID: &uid, Class: "chat"}} })
-	if err := os.MkdirAll(filepath.Join(chat.dir, "appq"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(chat.dir, "appq", "travel.ogpkg"), []byte(pkg), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	resp = chat.call(`{"source":{"region_id":"appq:travel","adapter":"chat"},"method":"POST","path":"/commands/pop","body":{},"egress":{"kind":"poll"}}`)
-	if resp["refused"] != "destination_not_allowed" || len(chat.up.got) != 0 {
-		t.Errorf("chat used the agent's tenancy: %v", resp)
-	}
-}
-
-// User builds ignore provisioned app-queue tenancies: the bring-up path and its join tokens stay off.
-func TestAppqIgnoredOffDebuggable(t *testing.T) {
-	h := start(t, Passthrough, nil)
-	if err := os.MkdirAll(filepath.Join(h.dir, "appq"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	pkg := fmt.Sprintf(`{"app":{"endpoints":{"hook":"%[1]s/api/v1/hooks/apps/app_1","commands":"%[1]s/api/v1/hooks/apps/app_1/commands"}},"client":{"auth":{"header":"X-Outgate-Hook-Token"}},"join":{"participant":"phone","token":"tok-synthetic"}}`, h.up.srv.URL)
-	if err := os.WriteFile(filepath.Join(h.dir, "appq", "travel.ogpkg"), []byte(pkg), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	resp := h.call(`{"source":{"account_id":"phone","region_id":"appq:travel","adapter":"appq"},"method":"POST","path":"/commands/pop","body":{},"egress":{"kind":"poll"},"timeout_ms":10000}`)
-	if resp["status"].(float64) == 200 || len(h.up.got) != 0 {
-		t.Errorf("tenancy used off debuggable: %v", resp)
 	}
 }
 

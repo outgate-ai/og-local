@@ -63,6 +63,9 @@ type Destination struct {
 	Env string
 	// Class is the destination class (ClassOutgate, ClassOnDevice, ClassProvider, ClassMirror).
 	Class string
+	// Tenancy and TenancyGen name the app tenancy an appq: destination belongs to.
+	Tenancy    string
+	TenancyGen string
 }
 
 var (
@@ -79,7 +82,7 @@ type Router struct {
 	// AllowHTTP lists hosts reachable over plain http (debuggable builds, LAN test regions).
 	AllowHTTP []string
 	Regions   *Regions
-	Tenancies *Tenancies
+	Tenancies TenancySource
 	// Providers are the phone region's external model providers, reached as
 	// "provider:<id>" or by an absolute URL on their host.
 	Providers []Provider
@@ -195,9 +198,12 @@ func (r *Router) provider(u *url.URL) (string, bool) {
 }
 
 func (r *Router) tenancy(name, path string, query url.Values) (*Destination, error) {
-	t, ok := r.Tenancies.Get(name)
-	if !ok {
+	if r.Tenancies == nil {
 		return nil, fmt.Errorf("%w: appq:%s", ErrUnknownRegion, name)
+	}
+	t, err := r.Tenancies.Get(name)
+	if err != nil {
+		return nil, err
 	}
 	base := t.Hook
 	if strings.HasPrefix(path, "/commands") {
@@ -219,7 +225,7 @@ func (r *Router) tenancy(name, path string, query url.Values) (*Destination, err
 	}
 	return &Destination{
 		Kind: Cloud, URL: u, Display: u.Hostname(), Env: env, Class: ClassOutgate,
-		Headers: map[string]string{t.AuthHeader: t.Token},
+		Headers: map[string]string{t.AuthHeader: t.Token}, Tenancy: name, TenancyGen: t.Gen,
 	}, nil
 }
 

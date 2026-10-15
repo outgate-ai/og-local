@@ -2,6 +2,7 @@ package ledger
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -71,5 +72,21 @@ func TestRingTotalsAndOrder(t *testing.T) {
 func TestCategories(t *testing.T) {
 	if got := Categories(map[string]int{"PII": 2, "CREDENTIAL": 1}); got != "CREDENTIAL:1,PII:2" {
 		t.Errorf("got %q", got)
+	}
+}
+
+func TestLifecycleRowsDontCount(t *testing.T) {
+	r := NewRing(4)
+	r.Record(&Row{ID: "1", Method: "POST", Content: true})
+	r.Record(&Row{ID: "2", EgressKind: AppqAdded, Kind: "other", RegionID: "appq:travel", AppID: "app_1", Participant: "dev-x"})
+	if last := r.Last(1); len(last) != 1 || last[0].ID != "2" || !Lifecycle(&last[0]) {
+		t.Errorf("Last = %+v", last)
+	}
+	if tot := r.Totals(); tot.Requests != 1 || tot.Clean != 1 {
+		t.Errorf("totals = %+v", tot)
+	}
+	b, _ := json.Marshal(&Row{ID: "3", Method: "GET"})
+	if bytes.Contains(b, []byte("app_id")) || bytes.Contains(b, []byte("participant")) {
+		t.Errorf("request rows changed: %s", b)
 	}
 }
