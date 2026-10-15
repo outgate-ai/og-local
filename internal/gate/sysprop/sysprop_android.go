@@ -10,10 +10,9 @@ import "C"
 
 import "unsafe"
 
+// On the phone only the real property counts: an OGL_PROP_ override in the environment would decide
+// ro.debuggable and the gate mode (og-os M12). Host builds keep the override for tests.
 func get(name string) string {
-	if v := fromEnv(name); v != "" {
-		return v
-	}
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
 	buf := (*C.char)(C.malloc(C.PROP_VALUE_MAX))

@@ -99,13 +99,19 @@ func New(cfg *Config, opts *Options) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("hub base: %w", err)
 	}
+	// App-queue tenancies are a bring-up path and their packages are live join tokens: debuggable
+	// builds only (og-os M12).
+	appqDir := ""
+	if cfg.Debuggable {
+		appqDir = cfg.DataDir + "/appq"
+	}
 	s := &Server{
 		cfg: cfg, log: log, masker: masker, ledger: sinks, ring: ring, started: time.Now(),
 		router: &route.Router{
 			Envs: cfg.Environments, Debuggable: cfg.Debuggable, ModelSocket: cfg.Models()[DefaultModel],
 			AllowHTTP: cfg.AllowHTTP,
 			Regions:   route.NewRegions(cfg.DataDir+"/state/regions.json", cfg.regionTTL()),
-			Tenancies: route.NewTenancies(cfg.DataDir + "/appq"),
+			Tenancies: route.NewTenancies(appqDir),
 			Providers: cfg.Providers(),
 		},
 		client:   &http.Client{Transport: tr, CheckRedirect: noRedirects},

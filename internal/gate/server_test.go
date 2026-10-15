@@ -649,7 +649,8 @@ func TestRegionHostsLearnedFromGlobal(t *testing.T) {
 }
 
 func TestAppqTenancyTokenInjected(t *testing.T) {
-	h := start(t, Passthrough, nil)
+	debuggable := func(c *Config) { c.Debuggable = true }
+	h := start(t, Passthrough, debuggable)
 	if err := os.MkdirAll(filepath.Join(h.dir, "appq"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -671,7 +672,7 @@ func TestAppqTenancyTokenInjected(t *testing.T) {
 	}
 
 	uid := uint32(os.Getuid()) //nolint:gosec // uids fit uint32
-	chat := start(t, Passthrough, func(c *Config) { c.Callers = []CallerRule{{UID: &uid, Class: "chat"}} })
+	chat := start(t, Passthrough, func(c *Config) { debuggable(c); c.Callers = []CallerRule{{UID: &uid, Class: "chat"}} })
 	if err := os.MkdirAll(filepath.Join(chat.dir, "appq"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -681,6 +682,22 @@ func TestAppqTenancyTokenInjected(t *testing.T) {
 	resp = chat.call(`{"source":{"region_id":"appq:travel","adapter":"chat"},"method":"POST","path":"/commands/pop","body":{},"egress":{"kind":"poll"}}`)
 	if resp["refused"] != "destination_not_allowed" || len(chat.up.got) != 0 {
 		t.Errorf("chat used the agent's tenancy: %v", resp)
+	}
+}
+
+// User builds ignore provisioned app-queue tenancies: the bring-up path and its join tokens stay off.
+func TestAppqIgnoredOffDebuggable(t *testing.T) {
+	h := start(t, Passthrough, nil)
+	if err := os.MkdirAll(filepath.Join(h.dir, "appq"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	pkg := fmt.Sprintf(`{"app":{"endpoints":{"hook":"%[1]s/api/v1/hooks/apps/app_1","commands":"%[1]s/api/v1/hooks/apps/app_1/commands"}},"client":{"auth":{"header":"X-Outgate-Hook-Token"}},"join":{"participant":"phone","token":"tok-synthetic"}}`, h.up.srv.URL)
+	if err := os.WriteFile(filepath.Join(h.dir, "appq", "travel.ogpkg"), []byte(pkg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resp := h.call(`{"source":{"account_id":"phone","region_id":"appq:travel","adapter":"appq"},"method":"POST","path":"/commands/pop","body":{},"egress":{"kind":"poll"},"timeout_ms":10000}`)
+	if resp["status"].(float64) == 200 || len(h.up.got) != 0 {
+		t.Errorf("tenancy used off debuggable: %v", resp)
 	}
 }
 
