@@ -16,7 +16,7 @@ const (
 	AppqMigrated = "appq.migrated" // a plain DE package of the bring-up, sealed and deleted
 )
 
-// Lifecycle reports whether r is a lifecycle row.
+// Lifecycle reports whether r is a lifecycle row: an app tenancy's, or a tunnel launcher's note (event).
 func Lifecycle(r *Row) bool {
-	return r.Method == "" && strings.HasPrefix(r.EgressKind, "appq.")
+	return r.Method == "" && (strings.HasPrefix(r.EgressKind, "appq.") || r.Event != "")
 }

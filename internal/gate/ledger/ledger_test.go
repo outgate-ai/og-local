@@ -82,6 +82,10 @@ func TestLifecycleRowsDontCount(t *testing.T) {
 	if last := r.Last(1); len(last) != 1 || last[0].ID != "2" || !Lifecycle(&last[0]) {
 		t.Errorf("Last = %+v", last)
 	}
+	r.Record(&Row{ID: "4", Caller: "tunnel_launcher", Event: "tunnel.connected", Kind: "event", Status: 200})
+	if last := r.Last(1); len(last) != 1 || !Lifecycle(&last[0]) {
+		t.Errorf("a tunnel note is not a lifecycle row: %+v", last)
+	}
 	if tot := r.Totals(); tot.Requests != 1 || tot.Clean != 1 {
 		t.Errorf("totals = %+v", tot)
 	}
