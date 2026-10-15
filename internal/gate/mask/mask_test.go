@@ -61,7 +61,7 @@ func newTestMasker(t *testing.T, hits map[string]pii.Class) (*Masker, *fakeDetec
 	fd := &fakeDetector{hits: hits}
 	det := NewDetector(func() (pii.Detector, func() error, error) { return fd, func() error { return nil }, nil }, time.Minute)
 	t.Cleanup(det.Close)
-	return New(NewStore(dir, 30*24*time.Hour, 1000), det), fd, dir
+	return New(sealedStore(t, dir, 30*24*time.Hour, 1000), det), fd, dir
 }
 
 func call(body string) *gate.Call {
@@ -189,7 +189,7 @@ func TestBinaryFollowsImagesPolicy(t *testing.T) {
 func TestFailClosed(t *testing.T) {
 	dir := t.TempDir()
 	det := NewDetector(func() (pii.Detector, func() error, error) { return nil, nil, errors.New("no model") }, time.Minute)
-	m := New(NewStore(dir, time.Hour, 10), det)
+	m := New(sealedStore(t, dir, time.Hour, 10), det)
 	in := `{"text":"hello there"}`
 	if _, _, err := m.Mask(context.Background(), call(in), []byte(in)); !errors.Is(err, gate.ErrDetectorUnavailable) {
 		t.Errorf("no detector: %v", err)
@@ -201,7 +201,7 @@ func TestFailClosed(t *testing.T) {
 		t.Errorf("stats = %+v", st)
 	}
 
-	locked := New(NewStore(filepath.Join(dir, "missing"), time.Hour, 10), det)
+	locked := New(sealedStore(t, filepath.Join(dir, "missing"), time.Hour, 10), det)
 	if _, _, err := locked.Mask(context.Background(), call(in), []byte(in)); !errors.Is(err, gate.ErrStorageLocked) {
 		t.Errorf("locked storage: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestReadyDoesNotLoadTheModel(t *testing.T) {
 		return &fakeDetector{}, func() error { return nil }, nil
 	}, time.Minute)
 	defer det.Close()
-	m := New(NewStore(t.TempDir(), time.Hour, 10), det)
+	m := New(sealedStore(t, t.TempDir(), time.Hour, 10), det)
 	if ok, _ := m.Ready(); !ok || loads != 0 {
 		t.Errorf("Ready = %v, loads = %d", ok, loads)
 	}
@@ -226,7 +226,9 @@ func TestReadyDoesNotLoadTheModel(t *testing.T) {
 
 func TestStorePersistsAndExpires(t *testing.T) {
 	dir := t.TempDir()
+	k := newTestSealer(t)
 	s := NewStore(dir, 30*24*time.Hour, 1000)
+	s.Sealer = k
 	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	s.now = func() time.Time { return now }
 	phs, err := s.Assign([]Item{{Name, testName}, {Address, testName}, {Credential, "synthetic-secret-value"}})
@@ -239,11 +241,12 @@ func TestStorePersistsAndExpires(t *testing.T) {
 	if !strings.HasPrefix(phs[2], "OG_CREDENTIAL_") {
 		t.Errorf("credential placeholder %q", phs[2])
 	}
-	if fi, err := os.Stat(filepath.Join(dir, "key")); err != nil || fi.Mode().Perm() != 0o600 {
-		t.Errorf("key file: %v %v", fi, err)
+	if fi, err := os.Stat(filepath.Join(dir, keysFile)); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("keys file: %v %v", fi, err)
 	}
 
 	s2 := NewStore(dir, 30*24*time.Hour, 1000)
+	s2.Sealer = k
 	s2.now = func() time.Time { return now.Add(10 * 24 * time.Hour) }
 	if v, c, ok := s2.Lookup(phs[0]); !ok || v != testName || c != Name {
 		t.Errorf("after reopen: %q %v %v", v, c, ok)
@@ -256,6 +259,7 @@ func TestStorePersistsAndExpires(t *testing.T) {
 	// 35 days after the first use: the credential (last used then) is gone, the name
 	// (used again on day 10) is kept for 30 days after that.
 	s3 := NewStore(dir, 30*24*time.Hour, 1000)
+	s3.Sealer = k
 	s3.now = func() time.Time { return now.Add(35 * 24 * time.Hour) }
 	if _, _, ok := s3.Lookup(phs[2]); ok {
 		t.Error("expired placeholder still restores")
@@ -266,8 +270,8 @@ func TestStorePersistsAndExpires(t *testing.T) {
 }
 
 func TestStoreDifferentKeysDifferentPlaceholders(t *testing.T) {
-	a, _ := NewStore(t.TempDir(), time.Hour, 10).Assign([]Item{{Name, testName}})
-	b, _ := NewStore(t.TempDir(), time.Hour, 10).Assign([]Item{{Name, testName}})
+	a, _ := sealedStore(t, t.TempDir(), time.Hour, 10).Assign([]Item{{Name, testName}})
+	b, _ := sealedStore(t, t.TempDir(), time.Hour, 10).Assign([]Item{{Name, testName}})
 	if a[0] == b[0] {
 		t.Error("two devices minted the same placeholder")
 	}

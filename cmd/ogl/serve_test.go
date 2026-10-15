@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"sync/atomic"
@@ -26,7 +27,9 @@ func TestGateHealth(t *testing.T) {
 		probes.Add(1)
 		return errors.New("model not provisioned")
 	}
-	m := mask.New(mask.NewStore(t.TempDir(), time.Hour, 10), det)
+	st := mask.NewStore(t.TempDir(), time.Hour, 10)
+	st.Sealer = copySealer{}
+	m := mask.New(st, det)
 	health := func(classes []gate.ClassRule) (bool, string) {
 		t.Helper()
 		cfg := &gate.Config{DataDir: t.TempDir(), Mode: gate.Mask, Classes: classes}
@@ -53,4 +56,14 @@ func TestGateHealth(t *testing.T) {
 	if loads.Load() != 0 {
 		t.Errorf("health loaded the detector %d times", loads.Load())
 	}
+}
+
+// copySealer stands in for og-gate-link's keystore2 key in these health tests.
+type copySealer struct{}
+
+func (copySealer) Seal(_ context.Context, p, _ []byte) ([]byte, error) {
+	return append([]byte(nil), p...), nil
+}
+func (copySealer) Open(_ context.Context, s, _ []byte) ([]byte, error) {
+	return append([]byte(nil), s...), nil
 }

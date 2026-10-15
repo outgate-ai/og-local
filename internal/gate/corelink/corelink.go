@@ -8,6 +8,7 @@ package corelink
 import (
 	"bufio"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -289,7 +290,7 @@ func (l *Link) dispatch(line []byte) {
 		if l.H.Lanes != nil {
 			l.H.Lanes(labels)
 		}
-	case "raised", "approval", "error":
+	case "raised", "approval", "sealed", "opened", "error":
 		if m.T == "error" && m.ID == "" {
 			l.Log.Warn("og-gate-link", "op", m.Op, "err", m.Error)
 			return
@@ -351,11 +352,17 @@ func (l *Link) ReportState(state int, detail string) {
 }
 
 func (l *Link) call(ctx context.Context, msg map[string]any) (json.RawMessage, error) {
+	return l.request(ctx, msg, true)
+}
+
+// request sends msg and waits for the reply with its id. needCore: OG Core must be attached;
+// otherwise the helper running is enough (the keystore ops).
+func (l *Link) request(ctx context.Context, msg map[string]any, needCore bool) (json.RawMessage, error) {
 	id := fmt.Sprintf("q%d", l.seq.Add(1))
 	msg["id"] = id
 	ch := make(chan json.RawMessage, 1)
 	l.mu.Lock()
-	if l.waiters == nil || !l.up.Load() {
+	if l.waiters == nil || (needCore && !l.up.Load()) || (!needCore && l.stdin == nil) {
 		l.mu.Unlock()
 		return nil, ErrUnavailable
 	}
@@ -396,6 +403,32 @@ func (l *Link) Raise(ctx context.Context, r *Request) (string, error) {
 		return "", fmt.Errorf("raise: %s", m.Error)
 	}
 	return m.ApprovalID, nil
+}
+
+// Seal and Open run on og-gate-link's keystore2 key (the masking map's key-encryption key, og-os M12).
+// They need the helper, not OG Core.
+func (l *Link) Seal(ctx context.Context, plain, aad []byte) ([]byte, error) {
+	return l.keyOp(ctx, "seal", "sealed", plain, aad)
+}
+
+func (l *Link) Open(ctx context.Context, sealed, aad []byte) ([]byte, error) {
+	return l.keyOp(ctx, "open", "opened", sealed, aad)
+}
+
+func (l *Link) keyOp(ctx context.Context, op, want string, data, aad []byte) ([]byte, error) {
+	resp, err := l.request(ctx, map[string]any{"t": op, "data": hex.EncodeToString(data), "aad": hex.EncodeToString(aad)}, false)
+	if err != nil {
+		return nil, err
+	}
+	var m struct {
+		T     string `json:"t"`
+		Data  string `json:"data"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(resp, &m); err != nil || m.T != want {
+		return nil, fmt.Errorf("%s: %s", op, m.Error)
+	}
+	return hex.DecodeString(m.Data)
 }
 
 // Cancel withdraws an approval the gate raised.

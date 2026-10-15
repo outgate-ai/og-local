@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -104,6 +105,11 @@ func runServe(args []string) int {
 			}}
 			opts.Sinks = append(opts.Sinks, link)
 			opts.Approver = link
+			if m != nil {
+				// The map's keys are sealed by og-gate-link's keystore2 key; without the link the map
+				// stays closed (mask.ErrKeystore) and provider content can't leave.
+				m.Store.Sealer = link
+			}
 		} else {
 			log.Warn("no OG Core link", "path", *linkPath, "err", err)
 		}
@@ -123,6 +129,9 @@ func runServe(args []string) int {
 	_ = srv.CheckCallers()
 	if link != nil {
 		link.Start(ctx)
+	}
+	if m != nil {
+		go openMap(ctx, m.Store, log)
 	}
 	ln, err := openListener(*listen, *socket)
 	if err != nil {
@@ -187,6 +196,29 @@ func newMasker(ceDir, model string, log *slog.Logger) *mask.Masker {
 	return mask.New(mask.NewStore(ceDir, 30*24*time.Hour, 50000), det)
 }
 
+// openMap opens the masking map as soon as CE storage and og-gate-link allow, so a Phase-1 plain
+// map is sealed (moved into keystore-wrapped storage, og-os M12) without waiting for the first
+// masked request. It retries until it succeeds.
+func openMap(ctx context.Context, st *mask.Store, log *slog.Logger) {
+	last := ""
+	for {
+		err := st.Ready()
+		if err == nil {
+			log.Info("masking map open", "entries", st.Len())
+			return
+		}
+		if err.Error() != last {
+			last = err.Error()
+			log.Info("masking map not open yet", "reason", last)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(10 * time.Second):
+		}
+	}
+}
+
 // reportHealth keeps OG Core's gate dot current.
 func reportHealth(ctx context.Context, link *corelink.Link, srv *gate.Server, cfg *gate.Config, m *mask.Masker) {
 	t := time.NewTicker(5 * time.Second)
@@ -222,6 +254,9 @@ func gateHealth(srv *gate.Server, cfg *gate.Config, m *mask.Masker) (connected b
 }
 
 func healthDetail(reason string, m *mask.Masker) string {
+	if strings.HasPrefix(reason, mask.ErrKeystore.Error()) {
+		return "The gate's key store isn't available, so content to external providers can't leave"
+	}
 	switch reason {
 	case mask.ErrLocked.Error():
 		return "Unlock the phone once: the gate's storage is still locked, so content to external providers can't leave"
