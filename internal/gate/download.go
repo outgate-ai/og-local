@@ -37,6 +37,14 @@ const callerTranscribe = "transcribe"
 // only, nothing on the request socket.
 const callerLocalAgent = "local-agent"
 
+// callerTunnel is the Cloudflare tunnel daemon (outgate_tunnel): the tunnel front only, nothing on
+// the request socket or the model front.
+const callerTunnel = "tunnel"
+
+// callerTunnelLauncher starts and watches the tunnel daemon (outgate_tunnel_launcher, the same uid):
+// op note on the request socket only.
+const callerTunnelLauncher = "tunnel_launcher"
+
 const (
 	// downloadIdleMin is the shortest idle timeout of a download; there is no total timeout.
 	downloadIdleMin = 10 * time.Second

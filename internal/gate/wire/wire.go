@@ -37,7 +37,7 @@ type Request struct {
 	V  int    `json:"v,omitempty"`
 	ID string `json:"id,omitempty"`
 	// Op is empty for an upstream request; "download" fetches a model file from the
-	// mirror or Hugging Face into a passed descriptor; "health", "ledger" and the app
+	// mirror or Hugging Face into a passed descriptor; "health", "ledger", "note" and the app
 	// tenancy ops ("appq_list", "appq_remove", "appq_import") are local.
 	Op     string `json:"op,omitempty"`
 	Source Source `json:"source"`
@@ -76,6 +76,10 @@ type Request struct {
 	// (appq_import only; a JSON object, or a string holding one).
 	Name    string          `json:"name,omitempty"`
 	Package json.RawMessage `json:"package,omitempty"`
+	// Event, Links and ErrorKind are for op "note": the tunnel launcher's lifecycle notes.
+	Event     string `json:"event,omitempty"`
+	Links     *int   `json:"links,omitempty"`
+	ErrorKind string `json:"error_kind,omitempty"`
 }
 
 type Masked struct {

@@ -198,7 +198,7 @@ func (s *Server) modelHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cred, _ := r.Context().Value(credKey{}).(peer.Cred)
 		class := s.classify(cred)
-		if class == "" {
+		if class == "" || class == callerTunnel || class == callerTunnelLauncher {
 			http.Error(w, `{"error":"caller_not_allowed"}`, http.StatusForbidden)
 			return
 		}

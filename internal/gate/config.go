@@ -176,6 +176,9 @@ func (c *Config) Validate() error {
 			return err
 		}
 	}
+	if err := c.validateTunnelCallers(); err != nil {
+		return err
+	}
 	seen := map[string]bool{}
 	for _, r := range c.Classes {
 		switch r.Class {

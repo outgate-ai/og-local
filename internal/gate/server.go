@@ -203,9 +203,10 @@ func (s *Server) handle(ctx context.Context, c *net.UnixConn) {
 			s.log.Warn("caller refused", "uid", cred.UID, "domain", cred.Domain())
 		}
 		resp = wire.Refuse(req.ID, 403, "caller_not_allowed", "")
-	case class == callerVoice, class == callerTranscribe, class == callerLocalAgent,
+	case class == callerVoice, class == callerTranscribe, class == callerLocalAgent, class == callerTunnel,
 		class == callerModels && req.Op != "download" && req.Op != "health",
-		req.Op == "download" && class != callerModels && class != "debug":
+		req.Op == "download" && class != callerModels && class != "debug",
+		class == callerTunnelLauncher && req.Op != "note", req.Op == "note" && class != callerTunnelLauncher:
 		s.log.Warn("op refused for caller", "class", class, "op", req.Op)
 		resp = wire.Refuse(req.ID, 403, "caller_not_allowed", "")
 	case req.Op == "":
@@ -220,6 +221,8 @@ func (s *Server) handle(ctx context.Context, c *net.UnixConn) {
 		resp = jsonResponse(200, s.ring.Last(req.Limit))
 	case isAppqOp(req.Op):
 		resp = s.appqOp(ctx, class, cred, req)
+	case req.Op == "note":
+		resp = s.note(cred, req)
 	default:
 		resp = wire.Refuse(req.ID, 400, "unknown_op", req.Op)
 	}
