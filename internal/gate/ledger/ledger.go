@@ -59,6 +59,14 @@ type Row struct {
 	// AppID and Participant name an app tenancy's app and participant (lifecycle rows, appq.go).
 	AppID       string `json:"app_id,omitempty"`
 	Participant string `json:"participant,omitempty"`
+	// Direction is "in" for a request that came in through the tunnel front.
+	Direction string `json:"direction,omitempty"`
+	// Event is a lifecycle note (tunnel.connected, ...).
+	Event string `json:"event,omitempty"`
+	// Subject is who sent a tunnel request: service_token:<name>, user:<keyed hash> or other.
+	Subject string `json:"subject,omitempty"`
+	// ClientKey is the id of the tunnel client key a request carried, never the key.
+	ClientKey string `json:"client_key,omitempty"`
 }
 
 // Sink receives every row once it is complete.

@@ -90,3 +90,20 @@ func TestLifecycleRowsDontCount(t *testing.T) {
 		t.Errorf("request rows changed: %s", b)
 	}
 }
+
+func TestTunnelFieldsOmittedUnlessSet(t *testing.T) {
+	b, _ := json.Marshal(&Row{ID: "a"})
+	var m map[string]any
+	_ = json.Unmarshal(b, &m)
+	for _, k := range []string{"direction", "event", "subject", "client_key"} {
+		if _, ok := m[k]; ok {
+			t.Errorf("%s present in %s", k, b)
+		}
+	}
+	b, _ = json.Marshal(&Row{ID: "b", Direction: "in", Event: "tunnel.connected", Subject: "other", ClientKey: "k_1"})
+	m = nil
+	_ = json.Unmarshal(b, &m)
+	if m["direction"] != "in" || m["event"] != "tunnel.connected" || m["subject"] != "other" || m["client_key"] != "k_1" {
+		t.Errorf("row = %s", b)
+	}
+}
