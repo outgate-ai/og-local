@@ -174,7 +174,7 @@ func (s *Server) ServeModel(ctx context.Context, ln net.Listener) error {
 		ReadHeaderTimeout: 10 * time.Second,
 		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
 			if uc, ok := c.(*net.UnixConn); ok {
-				if cred, err := peer.Of(uc); err == nil {
+				if cred, err := s.peerOf(uc); err == nil {
 					return context.WithValue(ctx, credKey{}, cred)
 				}
 			}

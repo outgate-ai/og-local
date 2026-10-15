@@ -48,6 +48,7 @@ type Server struct {
 	// hubBase is Hugging Face's origin; hubClient follows its redirects (hubRedirect).
 	hubBase   *url.URL
 	hubClient *http.Client
+	peerOf    func(*net.UnixConn) (peer.Cred, error)
 }
 
 // Options are the parts tests and the command line replace.
@@ -68,6 +69,8 @@ type Options struct {
 	HubBase string
 	// Appq is the sealed app tenancy store (<ce>/appq); nil: none, appq: requests are refused.
 	Appq *appq.Store
+	// PeerOf replaces peer.Of (tests: SELinux domains can't be faked on a host).
+	PeerOf func(*net.UnixConn) (peer.Cred, error)
 }
 
 func New(cfg *Config, opts *Options) (*Server, error) {
@@ -126,6 +129,7 @@ func New(cfg *Config, opts *Options) (*Server, error) {
 		packages: &peer.Packages{Path: cfg.PackagesList},
 
 		downloadIdle: opts.DownloadIdle,
+		peerOf:       opts.PeerOf,
 	}
 	s.hubClient = &http.Client{Transport: tr, CheckRedirect: s.hubRedirect}
 	if s.packages.Path == "" {
@@ -133,6 +137,9 @@ func New(cfg *Config, opts *Options) (*Server, error) {
 	}
 	if s.downloadIdle <= 0 {
 		s.downloadIdle = downloadIdleMin
+	}
+	if s.peerOf == nil {
+		s.peerOf = peer.Of
 	}
 	return s, nil
 }
@@ -171,7 +178,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 
 func (s *Server) handle(ctx context.Context, c *net.UnixConn) {
 	defer func() { _ = c.Close() }()
-	cred, err := peer.Of(c)
+	cred, err := s.peerOf(c)
 	if err != nil {
 		s.log.Warn("peer credentials", "err", err)
 		return
