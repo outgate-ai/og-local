@@ -29,10 +29,22 @@ func hungUp(rc syscall.RawConn) bool {
 
 // writableFD reports whether fd is open for writing without O_APPEND.
 func writableFD(fd int) bool {
+	fl, ok := fdFlags(fd)
+	return ok && openForWrite(fl) && fl&syscall.O_APPEND == 0
+}
+
+// streamFD reports whether fd is open for writing (a pipe, or a file appended to).
+func streamFD(fd int) bool {
+	fl, ok := fdFlags(fd)
+	return ok && openForWrite(fl)
+}
+
+func fdFlags(fd int) (uintptr, bool) {
 	fl, _, e := syscall.Syscall(syscall.SYS_FCNTL, uintptr(fd), syscall.F_GETFL, 0) //nolint:gosec // descriptors are non-negative
-	if e != 0 {
-		return false
-	}
+	return fl, e == 0
+}
+
+func openForWrite(fl uintptr) bool {
 	mode := fl & syscall.O_ACCMODE
-	return (mode == syscall.O_WRONLY || mode == syscall.O_RDWR) && fl&syscall.O_APPEND == 0
+	return mode == syscall.O_WRONLY || mode == syscall.O_RDWR
 }

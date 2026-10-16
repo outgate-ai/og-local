@@ -46,7 +46,9 @@ var requestHeaders = map[string]bool{
 
 var responseHeaders = []string{"Content-Type", "Retry-After", "Etag", "Location", "Www-Authenticate", "X-Request-Id", "Date"}
 
-func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req *wire.Request, fds []int) *wire.Response {
+// forward sends an upstream request. A stream is returned when the response body goes on into the
+// request's response_fd once the response line is written (backup); it records the ledger row then.
+func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req *wire.Request, fds []int) (_ *wire.Response, stream *responseStream) {
 	start := time.Now()
 	method := strings.ToUpper(req.Method)
 	if method == "" {
@@ -60,11 +62,9 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 		Mask: MaskNotRequired,
 	}
 	defer func() {
-		row.DurationMs = time.Since(start).Milliseconds()
-		s.ledger.Record(&row)
-		s.log.Info("egress", "id", row.ID, "caller", row.Caller, "dest", row.Destination, "class", row.Class,
-			"method", row.Method, "path", row.PathClass, "status", row.Status, "out", row.BytesOut, "in", row.BytesIn,
-			"mask", row.Mask, "masked", row.MaskedCount, "blocked", row.Blocked, "reason", row.BlockReason, "ms", row.DurationMs)
+		if stream == nil {
+			s.record(&row, start)
+		}
 	}()
 	refuse := func(status int, reason, detail string) *wire.Response {
 		row.Blocked, row.BlockReason, row.Status = true, reason, status
@@ -91,17 +91,17 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 		holdBudget = min(time.Duration(req.TimeoutMs)*time.Millisecond, holdMax)
 	}
 	if !methods[method] {
-		return refuse(400, "bad_method", method)
+		return refuse(400, "bad_method", method), nil
 	}
 
 	// App tenancies carry a join token only the gate holds: og-agentd's transport (and debug tools
 	// on debuggable builds) only.
 	if strings.HasPrefix(req.Source.RegionID, "appq:") && class != "agent" && (class != "debug" || !s.cfg.Debuggable) {
-		return refuse(403, "destination_not_allowed", "app tenancies are for the agent runtime")
+		return refuse(403, "destination_not_allowed", "app tenancies are for the agent runtime"), nil
 	}
 	query, err := queryValues(req.Query)
 	if err != nil {
-		return refuse(400, "bad_query", err.Error())
+		return refuse(400, "bad_query", err.Error()), nil
 	}
 	dest, err := s.router.Resolve(req.Source.RegionID, req.URL, req.Path, query)
 	if err != nil {
@@ -109,6 +109,9 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 			row.Destination, row.PathClass = u.Hostname(), route.PathClass(u.Path)
 		} else {
 			row.PathClass = route.PathClass(req.Path)
+		}
+		if class == callerBackup {
+			row.PathClass = ""
 		}
 		reason := "destination_not_allowed"
 		status := 403
@@ -119,10 +122,25 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 		} else if st, code, ok := appqRefusal(err); ok {
 			reason, status = code, st
 		}
-		return refuse(status, reason, err.Error())
+		return refuse(status, reason, err.Error()), nil
+	}
+	// Backup buckets are Seedvault's alone (and debug tools' on debuggable builds); Seedvault reaches nothing else.
+	if class == callerBackup && dest.Class != route.ClassBackup {
+		row.Destination = dest.Display
+		return refuse(403, "destination_not_allowed", "backup callers reach backup buckets only"), nil
+	}
+	if dest.Class == route.ClassBackup {
+		row.Destination, row.Class = dest.Display, dest.Class
+		if class != callerBackup && (class != "debug" || !s.cfg.Debuggable) {
+			return refuse(403, "destination_not_allowed", "backup buckets are for the backup caller"), nil
+		}
+		return s.backup(ctx, req, method, dest, &row, fds, refuse)
+	}
+	if req.BodyFD != "" || req.BodySize != nil || req.ResponseFD != "" {
+		return refuse(400, "bad_request", "body_fd and response_fd are for backup destinations"), nil
 	}
 	if status, code, detail, refused := s.storeNotReady(method, dest); refused {
-		return refuse(status, code, detail)
+		return refuse(status, code, detail), nil
 	}
 	path := req.Path
 	if dest.URL != nil {
@@ -139,7 +157,7 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 
 	body, ctype, err := s.requestBody(req, fds)
 	if err != nil {
-		return refuse(400, "bad_body", err.Error())
+		return refuse(400, "bad_body", err.Error()), nil
 	}
 	call := &Call{
 		Caller: class, Req: req, Path: row.PathClass, Kind: row.Kind, ContentType: ctype,
@@ -156,7 +174,7 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 		if !s.aggregatesModels(method, p) {
 			q, _ := url.ParseQuery(rawQuery)
 			if model, err = s.modelFor(method, q, body); err != nil {
-				return refuse(404, "unknown_model", err.Error())
+				return refuse(404, "unknown_model", err.Error()), nil
 			}
 			row.Destination, dest.Socket = model.display, model.socket
 		}
@@ -172,12 +190,12 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 			row.ApprovalID = approvalID
 		}
 		if aerr != nil {
-			return refuseAsk(aerr, approvalID, na.Error())
+			return refuseAsk(aerr, approvalID, na.Error()), nil
 		}
 		if !d.images {
 			r := refuse(403, "blocked_by_policy", "the image was not chosen to leave")
 			r.ApprovalID = approvalID
-			return r
+			return r, nil
 		}
 		call.Approved = true
 	}
@@ -197,7 +215,7 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 			d, approvalID, aerr := s.asks.hold(ctx, call, dest.Display, na, holdBudget)
 			row.ApprovalID = approvalID
 			if aerr != nil {
-				return refuseAsk(aerr, approvalID, na.Error())
+				return refuseAsk(aerr, approvalID, na.Error()), nil
 			}
 			call.Decisions, call.Approved = d.values, call.Approved || d.images
 			sent, m, err = s.masker.Mask(ctx, call, body)
@@ -213,11 +231,11 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 				status, reason = 403, ErrNeedsApproval.Error()
 			}
 			s.log.Info("content refused", "reason", reason, "err", err)
-			return refuse(status, reason, err.Error())
+			return refuse(status, reason, err.Error()), nil
 		}
 		row.MaskedCount, row.MaskedCategories = m.Count, m.Categories
 		if m.Blocked > 0 && len(sent) == 0 {
-			return refuse(403, "blocked_by_policy", "")
+			return refuse(403, "blocked_by_policy", ""), nil
 		}
 	}
 	row.BytesOut = int64(len(sent))
@@ -227,7 +245,7 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 	defer cancel()
 	hreq, err := s.upstreamRequest(cctx, dest, req, method, sent, ctype)
 	if err != nil {
-		return refuse(400, "bad_request", err.Error())
+		return refuse(400, "bad_request", err.Error()), nil
 	}
 	var hresp *http.Response
 	switch {
@@ -252,7 +270,7 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 		}
 		r := wire.Fail(req.ID, row.Status, "upstream_unreachable", row.Error)
 		r.Ledger, r.Class, r.Masked.Mask = row.ID, row.Class, row.Mask
-		return r
+		return r, nil
 	}
 	defer func() { _ = hresp.Body.Close() }()
 	data, err := io.ReadAll(io.LimitReader(hresp.Body, maxResponse+1))
@@ -262,7 +280,7 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 		row.Error = "response_unreadable"
 		r := wire.Fail(req.ID, 502, "upstream_unreachable", "response unreadable or too large")
 		r.Ledger, r.Class, r.Masked.Mask = row.ID, row.Class, row.Mask
-		return r
+		return r, nil
 	}
 	if dest.Env != "" && hresp.StatusCode/100 == 2 && s.isGlobal(dest) {
 		if n := s.router.Regions.LearnFrom(s.cfg.Learn, row.PathClass, data, dest.Env); n > 0 {
@@ -271,7 +289,7 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 	}
 	data, refusal := s.appqResponse(ctx, class, cred.UID, req, method, dest, &row, hresp.StatusCode, data)
 	if refusal != nil {
-		return refusal
+		return refusal, nil
 	}
 	call.RespContentType = hresp.Header.Get("Content-Type")
 	// Placeholders this gate minted come back filled in, whatever the class: those of
@@ -285,7 +303,16 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 	out.Masked = wire.Masked{Count: row.MaskedCount, Categories: row.MaskedCategories, Mask: row.Mask}
 	out.Restored = fields
 	out.Ledger, out.Class = row.ID, row.Class
-	return out
+	return out, nil
+}
+
+// record completes a request's ledger row and logs it.
+func (s *Server) record(row *ledger.Row, start time.Time) {
+	row.DurationMs = time.Since(start).Milliseconds()
+	s.ledger.Record(row)
+	s.log.Info("egress", "id", row.ID, "caller", row.Caller, "dest", row.Destination, "class", row.Class,
+		"method", row.Method, "path", row.PathClass, "status", row.Status, "out", row.BytesOut, "in", row.BytesIn,
+		"mask", row.Mask, "masked", row.MaskedCount, "blocked", row.Blocked, "reason", row.BlockReason, "ms", row.DurationMs)
 }
 
 // imageNeedsConsent: images from every caller but Chat (the agent, debug tools)

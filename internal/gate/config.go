@@ -61,14 +61,15 @@ type ClassRule struct {
 	Destinations []route.Provider `json:"destinations,omitempty"`
 }
 
-// DefaultClasses apply when gate.conf names none: Outgate, the on-device model and
-// the model mirror unmasked, the phone region's external providers masked (none configured).
+// DefaultClasses apply when gate.conf names none: Outgate, the on-device model, the
+// model mirror and backups unmasked, the phone region's external providers masked (none configured).
 func DefaultClasses() []ClassRule {
 	return []ClassRule{
 		{Class: route.ClassOutgate, Mask: false},
 		{Class: route.ClassOnDevice, Mask: false},
 		{Class: route.ClassProvider, Mask: true},
 		{Class: route.ClassMirror, Mask: false},
+		{Class: route.ClassBackup, Mask: false},
 	}
 }
 
@@ -179,10 +180,13 @@ func (c *Config) Validate() error {
 	if err := c.validateTunnelCallers(); err != nil {
 		return err
 	}
+	if err := c.validateBackups(); err != nil {
+		return err
+	}
 	seen := map[string]bool{}
 	for _, r := range c.Classes {
 		switch r.Class {
-		case route.ClassOutgate, route.ClassOnDevice, route.ClassProvider, route.ClassMirror:
+		case route.ClassOutgate, route.ClassOnDevice, route.ClassProvider, route.ClassMirror, route.ClassBackup:
 		default:
 			return fmt.Errorf("classes: unknown class %q", r.Class)
 		}
@@ -195,6 +199,9 @@ func (c *Config) Validate() error {
 		}
 		if r.Class == route.ClassMirror && r.Mask {
 			return errors.New("classes: the model mirror is never masked")
+		}
+		if r.Class == route.ClassBackup && r.Mask {
+			return errors.New("classes: backups are never masked (their content is ciphertext)")
 		}
 		if len(r.Destinations) > 0 && r.Class != route.ClassProvider {
 			return fmt.Errorf("classes: %q takes no destinations", r.Class)
@@ -210,9 +217,30 @@ func (c *Config) Validate() error {
 			}
 			ids[d.ID] = true
 			for _, e := range c.Environments {
-				if sameHost(u, e.Global) || sameHost(u, e.OIDC) {
+				if sameHost(u, e.Global) || sameHost(u, e.OIDC) || sameHost(u, e.Backup) {
 					return fmt.Errorf("classes: provider %q is on Outgate's own host %s", d.ID, u.Hostname())
 				}
+			}
+		}
+	}
+	return nil
+}
+
+// validateBackups: an environment's backup is a bare https origin (no path, query or user
+// info) on none of Outgate's own hosts.
+func (c *Config) validateBackups() error {
+	for _, e := range c.Environments {
+		if e.Backup == "" {
+			continue
+		}
+		u, err := url.Parse(e.Backup)
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Opaque != "" ||
+			(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+			return fmt.Errorf("environments: %q: backup %q is not https://<host>", e.ID, e.Backup)
+		}
+		for _, o := range c.Environments {
+			if sameHost(u, o.Global) || sameHost(u, o.OIDC) {
+				return fmt.Errorf("environments: %q: backup is on Outgate's own host %s", e.ID, u.Hostname())
 			}
 		}
 	}
@@ -315,6 +343,7 @@ func (c *Config) MaskingClasses() map[string]bool {
 		route.ClassOnDevice: c.Masks(route.ClassOnDevice),
 		route.ClassProvider: c.Masks(route.ClassProvider),
 		route.ClassMirror:   c.Masks(route.ClassMirror),
+		route.ClassBackup:   c.Masks(route.ClassBackup),
 	}
 }
 

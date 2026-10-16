@@ -199,6 +199,7 @@ func (s *Server) handle(ctx context.Context, c *net.UnixConn) {
 	}
 	_ = c.SetReadDeadline(time.Time{})
 	var resp *wire.Response
+	var stream *responseStream
 	switch {
 	case class == "":
 		if err := s.packages.Err(); err != nil {
@@ -210,11 +211,16 @@ func (s *Server) handle(ctx context.Context, c *net.UnixConn) {
 	case class == callerVoice, class == callerTranscribe, class == callerLocalAgent, class == callerTunnel,
 		class == callerModels && req.Op != "download" && req.Op != "health",
 		req.Op == "download" && class != callerModels && class != "debug",
-		class == callerTunnelLauncher && req.Op != "note", req.Op == "note" && class != callerTunnelLauncher:
+		class == callerTunnelLauncher && req.Op != "note", req.Op == "note" && class != callerTunnelLauncher,
+		class == callerBackup && req.Op != "":
 		s.log.Warn("op refused for caller", "class", class, "op", req.Op)
 		resp = wire.Refuse(req.ID, 403, "caller_not_allowed", "")
+	case req.Op == "" && (class == callerBackup || req.BodyFD != "" || req.ResponseFD != ""):
+		fctx, stop := untilHangup(ctx, c)
+		defer stop()
+		resp, stream = s.forward(fctx, class, cred, req, fds)
 	case req.Op == "":
-		resp = s.forward(ctx, class, cred, req, fds)
+		resp, _ = s.forward(ctx, class, cred, req, fds)
 	case req.Op == "download":
 		dctx, stop := untilHangup(ctx, c)
 		resp = s.download(dctx, class, cred, req, fds)
@@ -232,8 +238,12 @@ func (s *Server) handle(ctx context.Context, c *net.UnixConn) {
 	}
 	resp.ID = req.ID
 	_ = c.SetWriteDeadline(time.Now().Add(30 * time.Second))
-	if err := wire.WriteResponse(c, resp); err != nil {
+	err = wire.WriteResponse(c, resp)
+	if err != nil {
 		s.log.Info("response not delivered", "err", err)
+	}
+	if stream != nil {
+		stream.run(c, req.ID, err == nil)
 	}
 }
 
@@ -335,9 +345,12 @@ func jsonResponse(status int, v any) *wire.Response {
 	return &wire.Response{Status: status, Body: b}
 }
 
+// closeFDs closes the descriptors passed with a request; -1 marks one closed already (a response_fd).
 func closeFDs(fds []int) {
 	for _, fd := range fds {
-		_ = syscall.Close(fd)
+		if fd >= 0 {
+			_ = syscall.Close(fd)
+		}
 	}
 }
 

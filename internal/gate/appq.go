@@ -109,7 +109,7 @@ func (s *Server) appqRemove(ctx context.Context, class string, cred peer.Cred, r
 func (s *Server) appqLeave(ctx context.Context, cred peer.Cred, i appq.Info) bool {
 	lctx, cancel := context.WithTimeout(context.WithValue(ctx, leaving{}, true), leaveTimeout)
 	defer cancel()
-	resp := s.forward(lctx, "agent", cred, &wire.Request{
+	resp, _ := s.forward(lctx, "agent", cred, &wire.Request{
 		Source: wire.Source{AccountID: i.AccountID, RegionID: "appq:" + i.Name, Adapter: "appq"},
 		Method: "POST", Path: "/?hook=control", Body: json.RawMessage(`{"action":"leave"}`),
 		Egress: wire.Egress{Kind: "control"}, TimeoutMs: leaveTimeout.Milliseconds(),

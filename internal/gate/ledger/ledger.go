@@ -28,13 +28,14 @@ type Row struct {
 	// Destination is the display host ("api.outgate.ai"), "on-device model" (og-local)
 	// or "on-device/<alias>" (another on-device model instance).
 	Destination string `json:"destination"`
-	// Class is the destination class: outgate, on-device, provider or mirror ("" when refused before routing).
+	// Class is the destination class: outgate, on-device, provider, mirror or backup ("" when refused before routing).
 	Class  string `json:"class,omitempty"`
 	Method string `json:"method"`
 	// PathClass is the path with ids replaced by ":id".
 	PathClass  string `json:"path_class"`
 	EgressKind string `json:"egress_kind,omitempty"`
-	// Kind is OG Core's class: llm, tool, upload, answer, event, other.
+	// Kind is OG Core's class: llm, tool, upload, answer, event, other; a backup row's is upload,
+	// download, list, delete or head (and its path_class is empty: never an object key).
 	Kind             string         `json:"kind"`
 	LaneID           string         `json:"lane_id,omitempty"`
 	StepIndex        *int           `json:"step_index,omitempty"`

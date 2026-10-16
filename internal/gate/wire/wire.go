@@ -57,7 +57,12 @@ type Request struct {
 	// File is a file the gate uploads as multipart (fields from Body, an object).
 	File      string `json:"file,omitempty"`
 	FileField string `json:"file_field,omitempty"`
-	Egress    Egress `json:"egress"`
+	// BodyFD ("fd:<n>") is a passed descriptor the raw body is read from, exactly BodySize
+	// bytes; ResponseFD one the response body is written into (backup destinations only).
+	BodyFD     string `json:"body_fd,omitempty"`
+	BodySize   *int64 `json:"body_size,omitempty"`
+	ResponseFD string `json:"response_fd,omitempty"`
+	Egress     Egress `json:"egress"`
 	// TimeoutMs is the long-poll budget; the gate answers within max(TimeoutMs, 10 s) + 2 s.
 	// For a download it is the idle timeout (at least 10 s); a download has no total timeout.
 	TimeoutMs int64 `json:"timeout_ms,omitempty"`
@@ -113,7 +118,7 @@ type Response struct {
 	Detail  string `json:"detail,omitempty"`
 	// Ledger is the gate's row id for this request.
 	Ledger string `json:"ledger,omitempty"`
-	// Class is the destination's class: outgate, on-device, provider or mirror.
+	// Class is the destination's class: outgate, on-device, provider, mirror or backup.
 	Class string `json:"class,omitempty"`
 	// ApprovalID is the 08 approval a held request waits for (refused needs_approval:
 	// send the same request again, or with egress.approval_id, after it is answered).
@@ -123,6 +128,17 @@ type Response struct {
 	Start    *int64 `json:"start,omitempty"`
 	Written  *int64 `json:"written,omitempty"`
 	Complete *bool  `json:"complete,omitempty"`
+	// Streaming: the body follows in the request's response_fd, then a Trailer line.
+	Streaming bool `json:"streaming,omitempty"`
+}
+
+// Trailer is the second line after a streaming response, written once its descriptor is closed.
+type Trailer struct {
+	V           int    `json:"v"`
+	ID          string `json:"id,omitempty"`
+	Done        bool   `json:"done"`
+	BodyWritten int64  `json:"body_written"`
+	Error       string `json:"error,omitempty"`
 }
 
 var ErrTooLong = errors.New("wire: request line too long")
@@ -162,6 +178,17 @@ func ReadRequest(r io.Reader) (*Request, error) {
 func WriteResponse(w io.Writer, resp *Response) error {
 	resp.V = Version
 	b, err := json.Marshal(resp)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(append(b, '\n'))
+	return err
+}
+
+// WriteTrailer writes the line that ends a streaming response.
+func WriteTrailer(w io.Writer, t *Trailer) error {
+	t.V = Version
+	b, err := json.Marshal(t)
 	if err != nil {
 		return err
 	}
