@@ -21,6 +21,9 @@ type Environment struct {
 	// Backup is the environment's backup bucket, "https://<bucket>.s3.<region>.amazonaws.com"
 	// (og-os M25): reached by virtual-hosted URLs on its host, class backup only.
 	Backup string `json:"backup,omitempty"`
+	// Uploads is the environment's uploads bucket, "https://<bucket>.s3.<region>.amazonaws.com"
+	// (og-os M04e): the chat's workspace files by presigned GET, class uploads only.
+	Uploads string `json:"uploads,omitempty"`
 	// DebuggableOnly environments are reachable only on debuggable builds.
 	DebuggableOnly bool `json:"debuggable_only,omitempty"`
 }
@@ -44,6 +47,8 @@ const (
 	ClassMirror = "mirror"
 	// ClassBackup: an environment's backup bucket (og-os M25); its content is ciphertext.
 	ClassBackup = "backup"
+	// ClassUploads: an environment's uploads bucket (og-os M04e), presigned GETs of workspace files.
+	ClassUploads = "uploads"
 )
 
 // Provider is an external model provider endpoint of the phone region (class provider).
@@ -105,6 +110,9 @@ func (r *Router) Resolve(regionID, rawURL, path string, query url.Values) (*Dest
 		}
 		if env, ok := r.backup(u); ok {
 			return &Destination{Kind: Cloud, URL: u, Display: strings.ToLower(u.Hostname()), Env: env, Class: ClassBackup}, nil
+		}
+		if env, ok := r.bucket(u, func(e Environment) string { return e.Uploads }); ok {
+			return &Destination{Kind: Cloud, URL: u, Display: strings.ToLower(u.Hostname()), Env: env, Class: ClassUploads}, nil
 		}
 		if env, ok := r.allowed(u); ok {
 			return &Destination{Kind: Cloud, URL: u, Display: u.Hostname(), Env: env, Class: ClassOutgate}, nil
@@ -262,6 +270,23 @@ func (r *Router) allowed(u *url.URL) (string, bool) {
 	if env, ok := r.Regions.HostEnv(host); ok {
 		if e := r.env(env); e != nil {
 			return env, true
+		}
+	}
+	return "", false
+}
+
+// bucket reports whether u is https to the bucket host [field] names for an environment, and which environment.
+func (r *Router) bucket(u *url.URL, field func(Environment) string) (string, bool) {
+	if u.Scheme != "https" {
+		return "", false
+	}
+	for _, e := range r.Envs {
+		origin := field(e)
+		if origin == "" || (e.DebuggableOnly && !r.Debuggable) {
+			continue
+		}
+		if b, err := url.Parse(origin); err == nil && strings.EqualFold(b.Host, u.Host) {
+			return e.ID, true
 		}
 	}
 	return "", false

@@ -136,8 +136,16 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 		}
 		return s.backup(ctx, req, method, dest, &row, fds, refuse)
 	}
+	// Uploads buckets are the chat's (its workspace files, by presigned GET), and debug tools' on debuggable builds.
+	if dest.Class == route.ClassUploads {
+		row.Destination, row.Class = dest.Display, dest.Class
+		if class != callerChat && (class != "debug" || !s.cfg.Debuggable) {
+			return refuse(403, "destination_not_allowed", "uploads buckets are for the chat"), nil
+		}
+		return s.uploads(ctx, req, method, dest, &row, fds, refuse)
+	}
 	if req.BodyFD != "" || req.BodySize != nil || req.ResponseFD != "" {
-		return refuse(400, "bad_request", "body_fd and response_fd are for backup destinations"), nil
+		return refuse(400, "bad_request", "body_fd and response_fd are for backup and uploads destinations"), nil
 	}
 	if status, code, detail, refused := s.storeNotReady(method, dest); refused {
 		return refuse(status, code, detail), nil
@@ -317,7 +325,7 @@ func (s *Server) record(row *ledger.Row, start time.Time) {
 
 // imageNeedsConsent: images from every caller but Chat (the agent, debug tools)
 // need an 08 approval before they leave.
-func imageNeedsConsent(class string) bool { return class != "chat" }
+func imageNeedsConsent(class string) bool { return class != callerChat }
 
 func (s *Server) isGlobal(d *route.Destination) bool {
 	if d.URL == nil {

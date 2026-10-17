@@ -70,6 +70,7 @@ func DefaultClasses() []ClassRule {
 		{Class: route.ClassProvider, Mask: true},
 		{Class: route.ClassMirror, Mask: false},
 		{Class: route.ClassBackup, Mask: false},
+		{Class: route.ClassUploads, Mask: false},
 	}
 }
 
@@ -183,10 +184,13 @@ func (c *Config) Validate() error {
 	if err := c.validateBackups(); err != nil {
 		return err
 	}
+	if err := c.validateUploads(); err != nil {
+		return err
+	}
 	seen := map[string]bool{}
 	for _, r := range c.Classes {
 		switch r.Class {
-		case route.ClassOutgate, route.ClassOnDevice, route.ClassProvider, route.ClassMirror, route.ClassBackup:
+		case route.ClassOutgate, route.ClassOnDevice, route.ClassProvider, route.ClassMirror, route.ClassBackup, route.ClassUploads:
 		default:
 			return fmt.Errorf("classes: unknown class %q", r.Class)
 		}
@@ -203,6 +207,9 @@ func (c *Config) Validate() error {
 		if r.Class == route.ClassBackup && r.Mask {
 			return errors.New("classes: backups are never masked (their content is ciphertext)")
 		}
+		if r.Class == route.ClassUploads && r.Mask {
+			return errors.New("classes: uploads are never masked (the user's own files coming in)")
+		}
 		if len(r.Destinations) > 0 && r.Class != route.ClassProvider {
 			return fmt.Errorf("classes: %q takes no destinations", r.Class)
 		}
@@ -217,7 +224,7 @@ func (c *Config) Validate() error {
 			}
 			ids[d.ID] = true
 			for _, e := range c.Environments {
-				if sameHost(u, e.Global) || sameHost(u, e.OIDC) || sameHost(u, e.Backup) {
+				if sameHost(u, e.Global) || sameHost(u, e.OIDC) || sameHost(u, e.Backup) || sameHost(u, e.Uploads) {
 					return fmt.Errorf("classes: provider %q is on Outgate's own host %s", d.ID, u.Hostname())
 				}
 			}
@@ -241,6 +248,30 @@ func (c *Config) validateBackups() error {
 		for _, o := range c.Environments {
 			if sameHost(u, o.Global) || sameHost(u, o.OIDC) {
 				return fmt.Errorf("environments: %q: backup is on Outgate's own host %s", e.ID, u.Hostname())
+			}
+		}
+	}
+	return nil
+}
+
+// validateUploads: an environment's uploads bucket is a bare https origin (no path, query or user
+// info) on none of Outgate's own hosts and not a backup bucket.
+func (c *Config) validateUploads() error {
+	for _, e := range c.Environments {
+		if e.Uploads == "" {
+			continue
+		}
+		u, err := url.Parse(e.Uploads)
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Opaque != "" ||
+			(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+			return fmt.Errorf("environments: %q: uploads %q is not https://<host>", e.ID, e.Uploads)
+		}
+		for _, o := range c.Environments {
+			if sameHost(u, o.Global) || sameHost(u, o.OIDC) {
+				return fmt.Errorf("environments: %q: uploads is on Outgate's own host %s", e.ID, u.Hostname())
+			}
+			if sameHost(u, o.Backup) {
+				return fmt.Errorf("environments: %q: uploads is a backup bucket %s", e.ID, u.Hostname())
 			}
 		}
 	}
@@ -344,6 +375,7 @@ func (c *Config) MaskingClasses() map[string]bool {
 		route.ClassProvider: c.Masks(route.ClassProvider),
 		route.ClassMirror:   c.Masks(route.ClassMirror),
 		route.ClassBackup:   c.Masks(route.ClassBackup),
+		route.ClassUploads:  c.Masks(route.ClassUploads),
 	}
 }
 
