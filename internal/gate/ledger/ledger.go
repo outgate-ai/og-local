@@ -35,7 +35,7 @@ type Row struct {
 	PathClass  string `json:"path_class"`
 	EgressKind string `json:"egress_kind,omitempty"`
 	// Kind is OG Core's class: llm, tool, upload, answer, event, other; a backup row's is upload,
-	// download, list, delete or head, an uploads row's download (and their path_class is empty:
+	// download, list, delete or head, an uploads row's download or upload (and their path_class is empty:
 	// never an object key).
 	Kind             string         `json:"kind"`
 	LaneID           string         `json:"lane_id,omitempty"`
