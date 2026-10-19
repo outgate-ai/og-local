@@ -212,38 +212,9 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 	// external providers. Outgate's regions mask with their own guardrail.
 	sent := body
 	if call.Content && s.cfg.Masks(dest.Class) {
-		row.Mask = MaskOn
-		if s.cfg.Mode == Passthrough {
-			row.Mask = MaskOff
-		}
-		var m wire.Masked
-		sent, m, err = s.masker.Mask(ctx, call, body)
-		var na *NeedsApproval
-		if errors.As(err, &na) {
-			d, approvalID, aerr := s.asks.hold(ctx, call, dest.Display, na, holdBudget)
-			row.ApprovalID = approvalID
-			if aerr != nil {
-				return refuseAsk(aerr, approvalID, na.Error()), nil
-			}
-			call.Decisions, call.Approved = d.values, call.Approved || d.images
-			sent, m, err = s.masker.Mask(ctx, call, body)
-		}
-		if err != nil {
-			status, reason := 503, "mask_failed"
-			switch {
-			case errors.Is(err, ErrDetectorUnavailable):
-				reason = ErrDetectorUnavailable.Error()
-			case errors.Is(err, ErrStorageLocked):
-				reason = ErrStorageLocked.Error()
-			case errors.Is(err, ErrNeedsApproval):
-				status, reason = 403, ErrNeedsApproval.Error()
-			}
-			s.log.Info("content refused", "reason", reason, "err", err)
-			return refuse(status, reason, err.Error()), nil
-		}
-		row.MaskedCount, row.MaskedCategories = m.Count, m.Categories
-		if m.Blocked > 0 && len(sent) == 0 {
-			return refuse(403, "blocked_by_policy", ""), nil
+		var refusal *wire.Response
+		if sent, refusal = s.maskContent(ctx, call, dest.Display, body, &row, holdBudget, refuse, refuseAsk); refusal != nil {
+			return refusal, nil
 		}
 	}
 	row.BytesOut = int64(len(sent))
@@ -321,6 +292,46 @@ func (s *Server) record(row *ledger.Row, start time.Time) {
 	s.log.Info("egress", "id", row.ID, "caller", row.Caller, "dest", row.Destination, "class", row.Class,
 		"method", row.Method, "path", row.PathClass, "status", row.Status, "out", row.BytesOut, "in", row.BytesIn,
 		"mask", row.Mask, "masked", row.MaskedCount, "blocked", row.Blocked, "reason", row.BlockReason, "ms", row.DurationMs)
+}
+
+// maskContent masks a request's content for a masked class, holding it for an 08 approval when
+// the policy says "ask". The returned refusal, when set, keeps the request from leaving.
+func (s *Server) maskContent(ctx context.Context, call *Call, display string, body []byte, row *ledger.Row, hold time.Duration,
+	refuse func(int, string, string) *wire.Response, refuseAsk func(error, string, string) *wire.Response,
+) ([]byte, *wire.Response) {
+	row.Mask = MaskOn
+	if s.cfg.Mode == Passthrough {
+		row.Mask = MaskOff
+	}
+	sent, m, err := s.masker.Mask(ctx, call, body)
+	var na *NeedsApproval
+	if errors.As(err, &na) {
+		d, approvalID, aerr := s.asks.hold(ctx, call, display, na, hold)
+		row.ApprovalID = approvalID
+		if aerr != nil {
+			return nil, refuseAsk(aerr, approvalID, na.Error())
+		}
+		call.Decisions, call.Approved = d.values, call.Approved || d.images
+		sent, m, err = s.masker.Mask(ctx, call, body)
+	}
+	if err != nil {
+		status, reason := 503, "mask_failed"
+		switch {
+		case errors.Is(err, ErrDetectorUnavailable):
+			reason = ErrDetectorUnavailable.Error()
+		case errors.Is(err, ErrStorageLocked):
+			reason = ErrStorageLocked.Error()
+		case errors.Is(err, ErrNeedsApproval):
+			status, reason = 403, ErrNeedsApproval.Error()
+		}
+		s.log.Info("content refused", "reason", reason, "err", err)
+		return nil, refuse(status, reason, err.Error())
+	}
+	row.MaskedCount, row.MaskedCategories = m.Count, m.Categories
+	if m.Blocked > 0 && len(sent) == 0 {
+		return nil, refuse(403, "blocked_by_policy", "")
+	}
+	return sent, nil
 }
 
 // imageNeedsConsent: images from every caller but Chat (the agent, debug tools)
