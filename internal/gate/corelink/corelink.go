@@ -485,17 +485,20 @@ type egressRow struct {
 	BlockReason      string `json:"block_reason,omitempty"`
 	OnDevice         bool   `json:"on_device"`
 	ApprovalID       string `json:"approval_id,omitempty"`
+	// Container and RunID: an on-device program's request (og-os M40); peers that don't know them ignore them.
+	Container string `json:"container,omitempty"`
+	RunID     string `json:"run_id,omitempty"`
 }
 
 // callerPackages names the app a caller class stands for in OG Core's ledger.
-var callerPackages = map[string]string{"chat": "ai.outgate.chat"}
+var callerPackages = map[string]string{"chat": "ai.outgate.chat", "containers": "ai.outgate.core"}
 
 // Record implements ledger.Sink. OG Core gets the rows that say what left the
-// phone (content, refusals, on-device requests); long-polls, token refreshes and
-// presence stay in the gate's own ledger only, so today's counters count messages
-// rather than polls.
+// phone (content, refusals, on-device requests, every on-device program's web
+// request); long-polls, token refreshes and presence stay in the gate's own ledger
+// only, so today's counters count messages rather than polls.
 func (l *Link) Record(r *ledger.Row) {
-	if !r.Content && !r.Blocked && !r.OnDevice {
+	if !r.Content && !r.Blocked && !r.OnDevice && r.Class != "web" {
 		return
 	}
 	l.mu.Lock()
@@ -507,6 +510,7 @@ func (l *Link) Record(r *ledger.Row) {
 		BytesOut: r.BytesOut, BytesIn: r.BytesIn, MaskedCount: r.MaskedCount,
 		MaskedCategories: ledger.Categories(r.MaskedCategories), Blocked: r.Blocked,
 		BlockReason: r.BlockReason, OnDevice: r.OnDevice, ApprovalID: r.ApprovalID,
+		Container: r.Container, RunID: r.RunID,
 	}
 	l.mu.Lock()
 	l.pending = append(l.pending, row)

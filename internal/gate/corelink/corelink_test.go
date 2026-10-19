@@ -208,3 +208,21 @@ func TestSealOpenWithoutCore(t *testing.T) {
 		t.Errorf("an OG Core call while detached: %v", err)
 	}
 }
+
+// An on-device program's web row reaches OG Core with its container and run, even without content;
+// other rows carry neither field, so older peers see what they saw before.
+func TestRecordContainerFields(t *testing.T) {
+	l := &Link{}
+	l.Record(&ledger.Row{Caller: "containers", Class: "web", Destination: "example.com", Kind: "other", Container: "ai.example.weather", RunID: "run-7"})
+	l.Record(&ledger.Row{Caller: "chat", Class: "outgate", Destination: "api.outgate.ai", Kind: "event", Content: true})
+	if len(l.pending) != 2 {
+		t.Fatalf("pending = %+v", l.pending)
+	}
+	if r := l.pending[0]; r.Container != "ai.example.weather" || r.RunID != "run-7" || r.AppPackage != "ai.outgate.core" {
+		t.Errorf("web row = %+v", r)
+	}
+	b, _ := json.Marshal(l.pending[1])
+	if strings.Contains(string(b), "container") || strings.Contains(string(b), "run_id") {
+		t.Errorf("other row = %s", b)
+	}
+}
