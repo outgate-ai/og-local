@@ -103,6 +103,16 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 	if err != nil {
 		return refuse(400, "bad_query", err.Error()), nil
 	}
+	// On-device programs (OG Core's containers, og-os M40) reach the web class and the on-device models only.
+	if class == callerContainers {
+		if len(req.Egress.Container) > webNameMax || len(req.Egress.RunID) > webNameMax {
+			return refuse(400, "bad_request", "egress.container and egress.run_id are at most 160 bytes"), nil
+		}
+		row.Container, row.RunID = req.Egress.Container, req.Egress.RunID
+		if req.URL != "" || req.Source.RegionID != route.ClassOnDevice {
+			return s.web(ctx, req, method, query, &row, holdBudget, refuse, refuseAsk), nil
+		}
+	}
 	dest, err := s.router.Resolve(req.Source.RegionID, req.URL, req.Path, query)
 	if err != nil {
 		if u, perr := url.Parse(req.URL); perr == nil {
@@ -162,6 +172,9 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 		row.ThreadID = route.ThreadID(path)
 	}
 	row.Kind = coreKind(req.Egress.Kind, method, row.PathClass, row.OnDevice)
+	if class == callerContainers && !containerPath(method, dest) {
+		return refuse(403, "destination_not_allowed", "on-device programs: completions and health only"), nil
+	}
 
 	body, ctype, err := s.requestBody(req, fds)
 	if err != nil {
@@ -186,6 +199,9 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 			}
 			row.Destination, dest.Socket = model.display, model.socket
 		}
+	}
+	if class == callerContainers && (model == nil || !containerModel(model.alias)) {
+		return refuse(403, "destination_not_allowed", "on-device programs use og-local and og-local-agent only"), nil
 	}
 
 	// Images and screenshots an agent sends leave only with the user's approval

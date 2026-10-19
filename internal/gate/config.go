@@ -62,7 +62,7 @@ type ClassRule struct {
 }
 
 // DefaultClasses apply when gate.conf names none: Outgate, the on-device model, the
-// model mirror and backups unmasked, the phone region's external providers masked (none configured).
+// model mirror and backups unmasked, the phone region's external providers and the web masked.
 func DefaultClasses() []ClassRule {
 	return []ClassRule{
 		{Class: route.ClassOutgate, Mask: false},
@@ -71,6 +71,7 @@ func DefaultClasses() []ClassRule {
 		{Class: route.ClassMirror, Mask: false},
 		{Class: route.ClassBackup, Mask: false},
 		{Class: route.ClassUploads, Mask: false},
+		{Class: route.ClassWeb, Mask: true},
 	}
 }
 
@@ -187,10 +188,14 @@ func (c *Config) Validate() error {
 	if err := c.validateUploads(); err != nil {
 		return err
 	}
+	if err := c.validateContainerCallers(); err != nil {
+		return err
+	}
 	seen := map[string]bool{}
 	for _, r := range c.Classes {
 		switch r.Class {
-		case route.ClassOutgate, route.ClassOnDevice, route.ClassProvider, route.ClassMirror, route.ClassBackup, route.ClassUploads:
+		case route.ClassOutgate, route.ClassOnDevice, route.ClassProvider, route.ClassMirror, route.ClassBackup, route.ClassUploads,
+			route.ClassWeb:
 		default:
 			return fmt.Errorf("classes: unknown class %q", r.Class)
 		}
@@ -358,13 +363,26 @@ func (c *Config) Providers() []route.Provider {
 }
 
 // MaskingNeeded reports whether any configured destination needs masking: a
-// masked class with endpoints, or Outgate itself if gate.conf masks it. Without
-// it the detector is never loaded and its absence is not a fault.
+// masked class with endpoints, the masked web class with a containers caller, or
+// Outgate itself if gate.conf masks it. Without it the detector is never loaded
+// and its absence is not a fault.
 func (c *Config) MaskingNeeded() bool {
 	if c.Masks(route.ClassOutgate) {
 		return true
 	}
+	if c.Masks(route.ClassWeb) && c.hasCaller(callerContainers) {
+		return true
+	}
 	return c.Masks(route.ClassProvider) && len(c.Providers()) > 0
+}
+
+func (c *Config) hasCaller(class string) bool {
+	for _, r := range c.Callers {
+		if r.Class == class {
+			return true
+		}
+	}
+	return false
 }
 
 // MaskingClasses maps each class to whether it is masked (health).
@@ -376,6 +394,7 @@ func (c *Config) MaskingClasses() map[string]bool {
 		route.ClassMirror:   c.Masks(route.ClassMirror),
 		route.ClassBackup:   c.Masks(route.ClassBackup),
 		route.ClassUploads:  c.Masks(route.ClassUploads),
+		route.ClassWeb:      c.Masks(route.ClassWeb),
 	}
 }
 

@@ -31,6 +31,10 @@ type Egress struct {
 	ApprovalID string `json:"approval_id,omitempty"`
 	ThreadID   string `json:"thread_id,omitempty"`
 	RunID      string `json:"run_id,omitempty"`
+	// Container and Allow are OG Core's for an on-device program's request (kind "container",
+	// og-os M40): the program, and the web hosts its manifest names (exact, or "*.<domain>").
+	Container string   `json:"container,omitempty"`
+	Allow     []string `json:"allow,omitempty"`
 }
 
 type Request struct {
@@ -118,7 +122,7 @@ type Response struct {
 	Detail  string `json:"detail,omitempty"`
 	// Ledger is the gate's row id for this request.
 	Ledger string `json:"ledger,omitempty"`
-	// Class is the destination's class: outgate, on-device, provider, mirror or backup.
+	// Class is the destination's class: outgate, on-device, provider, mirror, backup, uploads or web.
 	Class string `json:"class,omitempty"`
 	// ApprovalID is the 08 approval a held request waits for (refused needs_approval:
 	// send the same request again, or with egress.approval_id, after it is answered).
@@ -130,6 +134,8 @@ type Response struct {
 	Complete *bool  `json:"complete,omitempty"`
 	// Streaming: the body follows in the request's response_fd, then a Trailer line.
 	Streaming bool `json:"streaming,omitempty"`
+	// Truncated: the body is the first part of a longer one (web class, og-os M40).
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // Trailer is the second line after a streaming response, written once its descriptor is closed.

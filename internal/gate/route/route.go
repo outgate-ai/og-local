@@ -49,6 +49,9 @@ const (
 	ClassBackup = "backup"
 	// ClassUploads: an environment's uploads bucket (og-os M04e), presigned GETs of workspace files.
 	ClassUploads = "uploads"
+	// ClassWeb: the web hosts an on-device program's manifest names (og-os M40); never routed here,
+	// the gate checks a containers request's own allow list.
+	ClassWeb = "web"
 )
 
 // Provider is an external model provider endpoint of the phone region (class provider).

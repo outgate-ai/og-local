@@ -3,6 +3,7 @@ package gate
 import (
 	"cmp"
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -50,6 +51,10 @@ type Server struct {
 	hubClient *http.Client
 	peerOf    func(*net.UnixConn) (peer.Cred, error)
 	tunnelDir string
+	// resolve, webDial and webRoots are the web class's name lookup, dialer and TLS roots (nil: the system's).
+	resolve  Resolver
+	webDial  func(ctx context.Context, network, addr string) (net.Conn, error)
+	webRoots *x509.CertPool
 }
 
 // Options are the parts tests and the command line replace.
@@ -74,6 +79,11 @@ type Options struct {
 	PeerOf func(*net.UnixConn) (peer.Cred, error)
 	// TunnelDir holds the tunnel front's settings.json and clients.json (credential-encrypted storage).
 	TunnelDir string
+	// Resolve, WebDial and WebRootCAs replace the web class's name lookup, its dialer (it is handed
+	// the checked address) and its TLS roots (tests).
+	Resolve    Resolver
+	WebDial    func(ctx context.Context, network, addr string) (net.Conn, error)
+	WebRootCAs *x509.CertPool
 }
 
 func New(cfg *Config, opts *Options) (*Server, error) {
@@ -134,6 +144,9 @@ func New(cfg *Config, opts *Options) (*Server, error) {
 		downloadIdle: opts.DownloadIdle,
 		peerOf:       opts.PeerOf,
 		tunnelDir:    opts.TunnelDir,
+		resolve:      opts.Resolve,
+		webDial:      opts.WebDial,
+		webRoots:     opts.WebRootCAs,
 	}
 	s.hubClient = &http.Client{Transport: tr, CheckRedirect: s.hubRedirect}
 	if s.packages.Path == "" {
@@ -144,6 +157,12 @@ func New(cfg *Config, opts *Options) (*Server, error) {
 	}
 	if s.peerOf == nil {
 		s.peerOf = peer.Of
+	}
+	if s.resolve == nil {
+		s.resolve = defaultResolve
+	}
+	if s.webDial == nil {
+		s.webDial = (&net.Dialer{Timeout: 10 * time.Second}).DialContext
 	}
 	return s, nil
 }
@@ -212,7 +231,7 @@ func (s *Server) handle(ctx context.Context, c *net.UnixConn) {
 		class == callerModels && req.Op != "download" && req.Op != "health",
 		req.Op == "download" && class != callerModels && class != "debug",
 		class == callerTunnelLauncher && req.Op != "note", req.Op == "note" && class != callerTunnelLauncher,
-		class == callerBackup && req.Op != "":
+		class == callerBackup && req.Op != "", class == callerContainers && req.Op != "":
 		s.log.Warn("op refused for caller", "class", class, "op", req.Op)
 		resp = wire.Refuse(req.ID, 403, "caller_not_allowed", "")
 	case req.Op == "" && (class == callerBackup || req.BodyFD != "" || req.ResponseFD != ""):

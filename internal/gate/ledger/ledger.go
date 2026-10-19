@@ -28,7 +28,7 @@ type Row struct {
 	// Destination is the display host ("api.outgate.ai"), "on-device model" (og-local)
 	// or "on-device/<alias>" (another on-device model instance).
 	Destination string `json:"destination"`
-	// Class is the destination class: outgate, on-device, provider, mirror, backup or uploads ("" when refused before routing).
+	// Class is the destination class: outgate, on-device, provider, mirror, backup, uploads or web ("" when refused before routing).
 	Class  string `json:"class,omitempty"`
 	Method string `json:"method"`
 	// PathClass is the path with ids replaced by ":id".
@@ -36,7 +36,7 @@ type Row struct {
 	EgressKind string `json:"egress_kind,omitempty"`
 	// Kind is OG Core's class: llm, tool, upload, answer, event, other; a backup row's is upload,
 	// download, list, delete or head, an uploads row's download or upload (and their path_class is empty:
-	// never an object key).
+	// never an object key); a web row's is other, its path_class empty too (never a path of the web).
 	Kind             string         `json:"kind"`
 	LaneID           string         `json:"lane_id,omitempty"`
 	StepIndex        *int           `json:"step_index,omitempty"`
@@ -69,6 +69,9 @@ type Row struct {
 	Subject string `json:"subject,omitempty"`
 	// ClientKey is the id of the tunnel client key a request carried, never the key.
 	ClientKey string `json:"client_key,omitempty"`
+	// Container and RunID name the on-device program and its run a containers request came from (og-os M40).
+	Container string `json:"container,omitempty"`
+	RunID     string `json:"run_id,omitempty"`
 }
 
 // Sink receives every row once it is complete.

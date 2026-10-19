@@ -33,8 +33,9 @@ var modelPaths = map[string]bool{"/health": true, "/v1/models": true, "/v1/chat/
 const agentModel = "og-local-agent"
 
 // voiceAllowed is what conversation mode (ai.outgate.voice), transcription's summaries
-// (ai.outgate.transcribe) and the on-device agent (ai.outgate.localagent) may ask of the model front:
-// completions and health. The instance itself is checked once resolved.
+// (ai.outgate.transcribe), the on-device agent (ai.outgate.localagent) and on-device programs
+// (containers) may ask of the model front: completions and health. The instance itself is checked
+// once resolved.
 func voiceAllowed(r *http.Request) bool {
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/chat/completions":
@@ -207,7 +208,7 @@ func (s *Server) modelHandler() http.Handler {
 			http.Error(w, `{"error":"caller_not_allowed"}`, http.StatusForbidden)
 			return
 		}
-		if (class == callerVoice || class == callerTranscribe || class == callerLocalAgent) && !voiceAllowed(r) {
+		if (class == callerVoice || class == callerTranscribe || class == callerLocalAgent || class == callerContainers) && !voiceAllowed(r) {
 			http.Error(w, `{"error":"caller_not_allowed"}`, http.StatusForbidden)
 			return
 		}
@@ -250,6 +251,10 @@ func (s *Server) modelHandler() http.Handler {
 			return
 		}
 		if class == callerTranscribe && m.alias != DefaultModel && m.alias != agentModel {
+			http.Error(w, `{"error":"caller_not_allowed"}`, http.StatusForbidden)
+			return
+		}
+		if class == callerContainers && !containerModel(m.alias) {
 			http.Error(w, `{"error":"caller_not_allowed"}`, http.StatusForbidden)
 			return
 		}
