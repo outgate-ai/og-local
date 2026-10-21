@@ -26,10 +26,13 @@ import (
 
 // Server serves the og_gate socket.
 type Server struct {
-	cfg     *Config
-	log     *slog.Logger
-	router  *route.Router
-	client  *http.Client
+	cfg    *Config
+	log    *slog.Logger
+	router *route.Router
+	client *http.Client
+	// pool is client's transport unless Options.Transport replaced it.
+	pool    *upstreamPool
+	changes <-chan struct{}
 	models  map[string]*modelInstance
 	masker  Masker
 	ledger  ledger.Sink
@@ -65,6 +68,9 @@ type Options struct {
 	Sinks []ledger.Sink
 	// Transport overrides the upstream transport (tests).
 	Transport http.RoundTripper
+	// NewTransport replaces upstreamTransport, and NetChanges the kernel's network changes (tests).
+	NewTransport func() *http.Transport
+	NetChanges   <-chan struct{}
 	// Health adds live entries to the health op (detector, map, core link).
 	Health func() map[string]any
 	// Approver raises and follows 08 approvals for "ask" (OG Core, through corelink).
@@ -112,8 +118,14 @@ func New(cfg *Config, opts *Options) (*Server, error) {
 		}
 	}
 	tr := opts.Transport
+	var pool *upstreamPool
 	if tr == nil {
-		tr = upstreamTransport()
+		newTransport := opts.NewTransport
+		if newTransport == nil {
+			newTransport = upstreamTransport
+		}
+		pool = newUpstreamPool(newTransport, log)
+		tr = pool
 	}
 	hubBase, err := url.Parse(cmp.Or(opts.HubBase, route.HubOrigin))
 	if err != nil {
@@ -133,7 +145,8 @@ func New(cfg *Config, opts *Options) (*Server, error) {
 			Tenancies: tenancies,
 			Providers: cfg.Providers(),
 		},
-		client:   &http.Client{Transport: tr, CheckRedirect: noRedirects},
+		client: &http.Client{Transport: tr, CheckRedirect: noRedirects},
+		pool:   pool, changes: opts.NetChanges,
 		hubBase:  hubBase,
 		models:   newModels(cfg.Models()),
 		health:   map[string]any{},
@@ -169,6 +182,13 @@ func New(cfg *Config, opts *Options) (*Server, error) {
 
 // Serve accepts connections until ctx ends, then waits for requests in flight.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
+	if s.pool != nil {
+		changes := s.changes
+		if changes == nil {
+			changes = netChanges(ctx, s.log)
+		}
+		go s.pool.followNetwork(ctx, changes)
+	}
 	go func() {
 		<-ctx.Done()
 		_ = ln.Close()

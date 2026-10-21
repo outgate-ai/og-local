@@ -235,8 +235,8 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 	}
 	row.BytesOut = int64(len(sent))
 
-	timeout := time.Duration(max(req.TimeoutMs, 10_000)+2_000) * time.Millisecond
-	cctx, cancel := context.WithTimeout(ctx, timeout)
+	deadline := start.Add(time.Duration(max(req.TimeoutMs, 10_000)+2_000) * time.Millisecond)
+	cctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	hreq, err := s.upstreamRequest(cctx, dest, req, method, sent, ctype)
 	if err != nil {
@@ -256,6 +256,9 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 		hresp, err = model.client.Do(hreq)
 	default:
 		hresp, err = s.client.Do(hreq)
+		if s.pool != nil {
+			s.pool.observe(hreq.URL.Host, err != nil && cctx.Err() != nil)
+		}
 	}
 	if err != nil {
 		row.Error = errClass(err)
@@ -664,6 +667,7 @@ func upstreamTransport() *http.Transport {
 		DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ForceAttemptHTTP2:     true,
+		HTTP2:                 &http.HTTP2Config{SendPingTimeout: 15 * time.Second, PingTimeout: 5 * time.Second},
 		MaxIdleConnsPerHost:   4,
 		IdleConnTimeout:       90 * time.Second,
 		ExpectContinueTimeout: time.Second,
