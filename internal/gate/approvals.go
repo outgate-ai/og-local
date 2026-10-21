@@ -32,6 +32,8 @@ const (
 	holdMax     = 110 * time.Second
 	pendingKept = 15 * time.Minute
 	answerKept  = 10 * time.Minute
+	// holdMargin is what a held request keeps of its deadline for the upstream request.
+	holdMargin = 2 * time.Second
 )
 
 // Errors of the ask flow, mapped onto refused codes.
@@ -131,10 +133,14 @@ func (a *asks) hold(ctx context.Context, c *Call, dest string, na *NeedsApproval
 	}
 	select {
 	case <-x.done:
-	case <-time.After(budget):
-		return nil, x.id, ErrNeedsApproval
-	case <-ctx.Done():
-		return nil, x.id, ErrNeedsApproval
+	default:
+		select {
+		case <-x.done:
+		case <-time.After(budget):
+			return nil, x.id, ErrNeedsApproval
+		case <-ctx.Done():
+			return nil, x.id, ErrNeedsApproval
+		}
 	}
 	d, err := decide(x.approval, na, true)
 	return d, x.id, err
@@ -199,6 +205,14 @@ func decide(ap *corelink.Approval, na *NeedsApproval, own bool) (*decision, erro
 		d.images = choice["image"] == corelink.TreatReal || !own
 	}
 	return d, nil
+}
+
+// holdWithin is budget, cut to end by until when until is set.
+func holdWithin(budget time.Duration, until time.Time) time.Duration {
+	if until.IsZero() {
+		return budget
+	}
+	return max(min(budget, time.Until(until)), 0)
 }
 
 func disclosureID(i int) string { return fmt.Sprintf("d%d", i) }

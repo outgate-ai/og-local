@@ -348,7 +348,7 @@ func (s *Server) maskWeb(ctx context.Context, req *wire.Request, u *url.URL, bod
 		return nil, refuse(503, "mask_failed", err.Error())
 	}
 	call := &Call{Caller: callerContainers, Req: req, Kind: row.Kind, Content: true, ContentType: "application/json", Raw: doc}
-	sent, r := s.maskContent(ctx, call, row.Destination, doc, row, hold, refuse, refuseAsk)
+	sent, r := s.maskContent(ctx, call, row.Destination, doc, row, hold, time.Time{}, refuse, refuseAsk)
 	if r != nil {
 		return nil, r
 	}

@@ -204,12 +204,17 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 		return refuse(403, "destination_not_allowed", "on-device programs use og-local and og-local-agent only"), nil
 	}
 
+	// The gate answers within its deadline: a request held for an approval is answered needs_approval
+	// in time for the caller to send it again once approved.
+	deadline := start.Add(time.Duration(max(req.TimeoutMs, 10_000)+2_000) * time.Millisecond)
+	holdUntil := deadline.Add(-holdMargin)
+
 	// Images and screenshots an agent sends leave only with the user's approval
 	// (decision #18), whatever the destination's masking: this is consent, not
 	// anonymization. What the user attaches in Chat passes: they chose to send it.
 	if call.Binary && len(body) > 0 && dest.Kind == route.Cloud && imageNeedsConsent(class) {
 		na := &NeedsApproval{Images: true}
-		d, approvalID, aerr := s.asks.hold(ctx, call, dest.Display, na, holdBudget)
+		d, approvalID, aerr := s.asks.hold(ctx, call, dest.Display, na, holdWithin(holdBudget, holdUntil))
 		if approvalID != "" {
 			row.ApprovalID = approvalID
 		}
@@ -229,13 +234,12 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 	sent := body
 	if call.Content && s.cfg.Masks(dest.Class) {
 		var refusal *wire.Response
-		if sent, refusal = s.maskContent(ctx, call, dest.Display, body, &row, holdBudget, refuse, refuseAsk); refusal != nil {
+		if sent, refusal = s.maskContent(ctx, call, dest.Display, body, &row, holdBudget, holdUntil, refuse, refuseAsk); refusal != nil {
 			return refusal, nil
 		}
 	}
 	row.BytesOut = int64(len(sent))
 
-	deadline := start.Add(time.Duration(max(req.TimeoutMs, 10_000)+2_000) * time.Millisecond)
 	cctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	hreq, err := s.upstreamRequest(cctx, dest, req, method, sent, ctype)
@@ -255,9 +259,11 @@ func (s *Server) forward(ctx context.Context, class string, cred peer.Cred, req 
 	case row.OnDevice:
 		hresp, err = model.client.Do(hreq)
 	default:
-		hresp, err = s.client.Do(hreq)
-		if s.pool != nil {
-			s.pool.observe(hreq.URL.Host, err != nil && cctx.Err() != nil)
+		late := cctx.Err() != nil
+		var gen uint64
+		hresp, err = s.client.Do(hreq.WithContext(withUpstreamGen(cctx, &gen)))
+		if s.pool != nil && !late {
+			s.pool.observe(hreq.URL.Host, gen, err != nil && cctx.Err() != nil)
 		}
 	}
 	if err != nil {
@@ -314,8 +320,9 @@ func (s *Server) record(row *ledger.Row, start time.Time) {
 }
 
 // maskContent masks a request's content for a masked class, holding it for an 08 approval when
-// the policy says "ask". The returned refusal, when set, keeps the request from leaving.
-func (s *Server) maskContent(ctx context.Context, call *Call, display string, body []byte, row *ledger.Row, hold time.Duration,
+// the policy says "ask" (no later than holdUntil, when set). The returned refusal, when set, keeps the
+// request from leaving.
+func (s *Server) maskContent(ctx context.Context, call *Call, display string, body []byte, row *ledger.Row, hold time.Duration, holdUntil time.Time,
 	refuse func(int, string, string) *wire.Response, refuseAsk func(error, string, string) *wire.Response,
 ) ([]byte, *wire.Response) {
 	row.Mask = MaskOn
@@ -325,7 +332,7 @@ func (s *Server) maskContent(ctx context.Context, call *Call, display string, bo
 	sent, m, err := s.masker.Mask(ctx, call, body)
 	var na *NeedsApproval
 	if errors.As(err, &na) {
-		d, approvalID, aerr := s.asks.hold(ctx, call, display, na, hold)
+		d, approvalID, aerr := s.asks.hold(ctx, call, display, na, holdWithin(hold, holdUntil))
 		row.ApprovalID = approvalID
 		if aerr != nil {
 			return nil, refuseAsk(aerr, approvalID, na.Error())

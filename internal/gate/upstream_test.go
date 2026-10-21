@@ -8,12 +8,15 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/outgate-ai/og-local/internal/gate/corelink"
 	"github.com/outgate-ai/og-local/internal/gate/wire"
 )
 
@@ -77,6 +80,12 @@ func (p *upstreamPool) current() *http.Transport {
 	return p.tr
 }
 
+func (p *upstreamPool) generation() uint64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.gen
+}
+
 func TestNetworkChangeDropsPooledConnections(t *testing.T) {
 	n := &network{}
 	changes := make(chan struct{})
@@ -133,21 +142,21 @@ func TestRepeatedEmptyTimeoutsDropPooledConnections(t *testing.T) {
 func TestUpstreamPoolResetsOnRepeatedTimeoutsPerHost(t *testing.T) {
 	made := 0
 	p := newUpstreamPool(func() *http.Transport { made++; return &http.Transport{} }, slog.New(slog.DiscardHandler))
-	p.observe("a", true)
-	p.observe("b", true)
+	p.observe("a", p.generation(), true)
+	p.observe("b", p.generation(), true)
 	if made != 1 {
 		t.Fatalf("reset after one timeout per host (%d transports)", made)
 	}
-	p.observe("a", false)
-	p.observe("a", true)
+	p.observe("a", p.generation(), false)
+	p.observe("a", p.generation(), true)
 	if made != 1 {
 		t.Fatalf("an answer did not clear the count (%d transports)", made)
 	}
-	p.observe("a", true)
+	p.observe("a", p.generation(), true)
 	if made != 2 {
 		t.Fatalf("two timeouts in a row did not reset (%d transports)", made)
 	}
-	p.observe("b", true)
+	p.observe("b", p.generation(), true)
 	if made != 2 {
 		t.Fatalf("a reset kept other hosts' counts (%d transports)", made)
 	}
@@ -197,5 +206,102 @@ func TestUpstreamDeadlineCountsFromTheRequest(t *testing.T) {
 	// Callers wait max(timeout_ms, 10 s) + 5 s; the gate answers within max(timeout_ms, 10 s) + 2 s.
 	if took > 12500*time.Millisecond {
 		t.Fatalf("answered after %s, past the 12 s the gate promises", took)
+	}
+}
+
+// countTransports counts the pools a gate makes: one at the start, one per reset.
+func countTransports(made *atomic.Int32, newTransport func() *http.Transport) func() *http.Transport {
+	return func() *http.Transport {
+		made.Add(1)
+		return newTransport()
+	}
+}
+
+func TestOldPoolTimeoutsKeepTheNewPool(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits out the gate's 12 s upstream deadline")
+	}
+	n := &network{}
+	var made atomic.Int32
+	h := startOnNetwork(t, n, make(chan struct{}))
+	h.srv.pool.mu.Lock()
+	h.srv.pool.newTransport = countTransports(&made, h.srv.pool.newTransport)
+	h.srv.pool.mu.Unlock()
+	if resp := h.get("/api/v1/me"); resp["status"].(float64) != 200 {
+		t.Fatalf("before: %v", resp)
+	}
+
+	// Four requests stuck on the dead connection: the first two timeouts replace the pool, the
+	// other two still belong to the old one.
+	n.gen.Add(1)
+	var wg sync.WaitGroup
+	for i := range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			time.Sleep(time.Duration(i) * 200 * time.Millisecond)
+			if st := h.get("/api/v1/me")["status"].(float64); st != 504 {
+				t.Errorf("a request on a silent connection = %v, want 504", st)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := made.Load(); got != 1 {
+		t.Fatalf("pools made after the timeouts = %d, want 1 (one reset)", got)
+	}
+	if resp := h.get("/api/v1/me"); resp["status"].(float64) != 200 {
+		t.Fatalf("after: %v", resp)
+	}
+}
+
+// stallMasker masks after the gate's upstream deadline has passed.
+type stallMasker struct{ markerMasker }
+
+func (m *stallMasker) Mask(ctx context.Context, c *Call, body []byte) ([]byte, wire.Masked, error) {
+	time.Sleep(12500 * time.Millisecond)
+	return m.markerMasker.Mask(ctx, c, body)
+}
+
+func TestUnsentLateRequestsKeepThePool(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits out the gate's 12 s upstream deadline")
+	}
+	var made atomic.Int32
+	h := startOpts(t, Mask, func(c *Config) { withProvider(portOf(c.Environments[0].Global))(c) }, &stallMasker{}, nil, func(o *Options) {
+		o.Transport, o.NewTransport = nil, countTransports(&made, upstreamTransport)
+	})
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp := h.call(`{"source":{"region_id":"provider:llm","adapter":"local"},"method":"POST","path":"/v1/chat/completions","body":{"text":"x"},"egress":{}}`)
+			if resp["status"].(float64) != 504 {
+				t.Errorf("resp = %v", resp)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := made.Load(); got != 1 {
+		t.Fatalf("pools made = %d, want 1: requests never sent counted as silent timeouts", got)
+	}
+}
+
+func TestApprovalHoldEndsBeforeTheGateDeadline(t *testing.T) {
+	ap := &fakeApprover{byID: map[string]*corelink.Approval{}, noReply: true}
+	h := startWith(t, Mask, nil, nil, ap)
+	png := filepath.Join(h.dir, "uploads", "shot.png")
+	_ = os.MkdirAll(filepath.Dir(png), 0o700)
+	_ = os.WriteFile(png, []byte("\x89PNG\r\n\x1a\n synthetic"), 0o600)
+	start := time.Now()
+	resp := h.call(fmt.Sprintf(`{"source":{"region_id":"global","adapter":"devq"},"method":"POST","path":"/api/v1/agents/devices/d1/uploads",`+
+		`"body":{"lane_id":"ln_1","step_index":2},"file":%q,"egress":{"kind":"upload"},"timeout_ms":0}`, png))
+	took := time.Since(start)
+	if resp["refused"] != "needs_approval" || resp["approval_id"] != "ap_g1" {
+		t.Fatalf("held: %v", resp)
+	}
+	// Answered no later than the 12 s the gate promises, less what the upstream request keeps.
+	if took > 12*time.Second-holdMargin+500*time.Millisecond {
+		t.Fatalf("held for %s", took)
 	}
 }

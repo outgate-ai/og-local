@@ -25,17 +25,28 @@ type upstreamPool struct {
 
 	mu       sync.Mutex
 	tr       *http.Transport
+	gen      uint64
 	timeouts map[string]int
 }
 
+type upstreamGenKey struct{}
+
+// withUpstreamGen has the pool write into *gen which generation of it sent the request (0: none).
+func withUpstreamGen(ctx context.Context, gen *uint64) context.Context {
+	return context.WithValue(ctx, upstreamGenKey{}, gen)
+}
+
 func newUpstreamPool(newTransport func() *http.Transport, log *slog.Logger) *upstreamPool {
-	return &upstreamPool{newTransport: newTransport, log: log, tr: newTransport(), timeouts: map[string]int{}}
+	return &upstreamPool{newTransport: newTransport, log: log, tr: newTransport(), gen: 1, timeouts: map[string]int{}}
 }
 
 func (u *upstreamPool) RoundTrip(r *http.Request) (*http.Response, error) {
 	u.mu.Lock()
-	tr := u.tr
+	tr, gen := u.tr, u.gen
 	u.mu.Unlock()
+	if p, ok := r.Context().Value(upstreamGenKey{}).(*uint64); ok {
+		*p = gen
+	}
 	return tr.RoundTrip(r)
 }
 
@@ -51,6 +62,7 @@ func (u *upstreamPool) reset(reason string) {
 	u.mu.Lock()
 	old := u.tr
 	u.tr = u.newTransport()
+	u.gen++
 	clear(u.timeouts)
 	u.mu.Unlock()
 	old.CloseIdleConnections()
@@ -58,8 +70,13 @@ func (u *upstreamPool) reset(reason string) {
 }
 
 // observe counts timeouts with nothing read per host; anything else from the host clears it.
-func (u *upstreamPool) observe(host string, timedOutEmpty bool) {
+// Outcomes of requests an older generation of the pool sent don't count.
+func (u *upstreamPool) observe(host string, gen uint64, timedOutEmpty bool) {
 	u.mu.Lock()
+	if gen != u.gen {
+		u.mu.Unlock()
+		return
+	}
 	if !timedOutEmpty {
 		delete(u.timeouts, host)
 		u.mu.Unlock()
