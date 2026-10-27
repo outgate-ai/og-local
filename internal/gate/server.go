@@ -268,6 +268,8 @@ func (s *Server) handle(ctx context.Context, c *net.UnixConn) {
 		resp = s.healthResponse(class)
 	case req.Op == "ledger" && class == "debug":
 		resp = jsonResponse(200, s.ring.Last(req.Limit))
+	case req.Op == "mask" && (class == callerContainers || class == "debug"):
+		resp = s.maskOp(req)
 	case isAppqOp(req.Op):
 		resp = s.appqOp(ctx, class, cred, req)
 	case req.Op == "note":
@@ -374,6 +376,47 @@ func (s *Server) healthResponse(class string) *wire.Response {
 
 func (s *Server) nextID() string {
 	return fmt.Sprintf("eg_%x_%d", s.started.Unix(), s.seq.Add(1))
+}
+
+// maxMaskText bounds one op "mask" text: OG Core's reports are far below it (≤ 4 KB per report,
+// DESIGN.md §6); a line above its cap is bad_request, never a detector batch.
+const maxMaskText = 64 << 10
+
+// maskOp is the phone-side masking OG Core calls for screen text about to go upstream: one free
+// text through the masker (the provider class's filtering), the masked text and the category
+// counts back. It never forwards anything and the gate writes no ledger row (nothing leaves; OG
+// Core keeps the screen_egress row). Fail closed: needs_approval (a policy asking per value has no
+// 08 sheet here), storage_locked (no placeholders can be minted), detector_unavailable, i.e. every
+// error makes the caller drop the text.
+func (s *Server) maskOp(req *wire.Request) *wire.Response {
+	var body []byte
+	if req.BodyText != nil {
+		body = []byte(*req.BodyText)
+	}
+	if req.BodyB64 != "" {
+		return wire.Refuse(req.ID, 400, "bad_body", "the mask op takes plain text in body_text")
+	}
+	if len(body) == 0 {
+		return jsonResponse(200, map[string]any{"text": "", "masked": wire.Masked{Mask: "not_required"}})
+	}
+	if len(body) > maxMaskText {
+		return wire.Refuse(req.ID, 400, "bad_body", fmt.Sprintf("text above %d bytes", maxMaskText))
+	}
+	c := &Call{Req: req, Kind: "other", Content: true, ContentType: "text/plain", Raw: body}
+	out, masked, err := s.masker.Mask(context.Background(), c, body)
+	var na *NeedsApproval
+	switch {
+	case errors.As(err, &na):
+		return wire.Refuse(req.ID, 403, ErrNeedsApproval.Error(), na.Error())
+	case errors.Is(err, ErrDetectorUnavailable):
+		return wire.Refuse(req.ID, 503, ErrDetectorUnavailable.Error(), err.Error())
+	case errors.Is(err, ErrStorageLocked):
+		return wire.Refuse(req.ID, 503, ErrStorageLocked.Error(), err.Error())
+	case err != nil:
+		return wire.Refuse(req.ID, 503, "mask_failed", err.Error())
+	}
+	masked.Mask = "on" // the text went through the masker (op mask's own response field)
+	return jsonResponse(200, map[string]any{"text": string(out), "masked": masked})
 }
 
 func jsonResponse(status int, v any) *wire.Response {
