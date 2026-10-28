@@ -25,7 +25,8 @@ import (
 )
 
 // callerContainers is OG Core (og_core, ai.outgate.core) for its on-device programs (og-os M40): the
-// web class, and completions and health on the on-device models; nothing else.
+// web class, completions and health on the on-device models, and (the request socket only) op "mask",
+// its own screen text to mask before it goes upstream; nothing else.
 const callerContainers = "containers"
 
 // egressContainer is the egress kind of an on-device program's web request.

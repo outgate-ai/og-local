@@ -45,10 +45,6 @@ const callerTunnel = "tunnel"
 // op note on the request socket only.
 const callerTunnelLauncher = "tunnel_launcher"
 
-// callerContainers is OG Core (og_core): the app containers' content (S8 llm, S11 web) and — the
-// request socket only — op "mask", its own screen text to mask before it goes upstream.
-const callerContainers = "containers"
-
 const (
 	// downloadIdleMin is the shortest idle timeout of a download; there is no total timeout.
 	downloadIdleMin = 10 * time.Second

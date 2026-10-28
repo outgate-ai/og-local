@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +21,7 @@ import (
 	"github.com/outgate-ai/og-local/internal/gate"
 	"github.com/outgate-ai/og-local/internal/gate/ledger"
 	"github.com/outgate-ai/og-local/internal/gate/mask"
+	"github.com/outgate-ai/og-local/internal/gate/peer"
 	"github.com/outgate-ai/og-local/internal/gate/route"
 	"github.com/outgate-ai/og-local/internal/gate/sealtest"
 	"github.com/outgate-ai/og-local/internal/pii"
@@ -69,15 +71,28 @@ func startOpMask(t *testing.T, m gate.Masker, class string) *opMask {
 	}
 	dir := t.TempDir()
 	uid := uint32(os.Getuid()) //nolint:gosec // uids fit uint32
+	rule := gate.CallerRule{UID: &uid, Class: class}
+	opts := &gate.Options{Masker: m, Sinks: []ledger.Sink{op}}
+	list := ""
+	if class == "containers" {
+		// The gate wants OG Core's rule as on the phone: its SELinux domain and its package.
+		rule = gate.CallerRule{Domain: "og_core", Package: "ai.outgate.core", Class: class}
+		list = filepath.Join(dir, "packages.list")
+		if err := os.WriteFile(list, []byte(fmt.Sprintf("ai.outgate.core %d 0 /data/user/0/ai.outgate.core platform 3003\n", uid)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		opts.PeerOf = func(*net.UnixConn) (peer.Cred, error) { return peer.Cred{UID: uid, Context: "u:r:og_core:s0"}, nil }
+	}
 	cfg := &gate.Config{
 		Environments: []route.Environment{env},
-		Callers:      []gate.CallerRule{{UID: &uid, Class: class}},
+		Callers:      []gate.CallerRule{rule},
+		PackagesList: list,
 		AllowHTTP:    []string{"127.0.0.1", "localhost"},
 		DataDir:      dir,
 		Mode:         gate.Mask,
 		Version:      "test",
 	}
-	srv, err := gate.New(cfg, &gate.Options{Masker: m, Sinks: []ledger.Sink{op}})
+	srv, err := gate.New(cfg, opts)
 	if err != nil {
 		t.Fatal(err)
 	}

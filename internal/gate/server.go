@@ -251,7 +251,7 @@ func (s *Server) handle(ctx context.Context, c *net.UnixConn) {
 		class == callerModels && req.Op != "download" && req.Op != "health",
 		req.Op == "download" && class != callerModels && class != "debug",
 		class == callerTunnelLauncher && req.Op != "note", req.Op == "note" && class != callerTunnelLauncher,
-		class == callerBackup && req.Op != "", class == callerContainers && req.Op != "":
+		class == callerBackup && req.Op != "", class == callerContainers && req.Op != "" && req.Op != "mask":
 		s.log.Warn("op refused for caller", "class", class, "op", req.Op)
 		resp = wire.Refuse(req.ID, 403, "caller_not_allowed", "")
 	case req.Op == "" && (class == callerBackup || req.BodyFD != "" || req.ResponseFD != ""):
